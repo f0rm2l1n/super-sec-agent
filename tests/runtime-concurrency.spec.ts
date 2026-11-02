@@ -223,8 +223,14 @@ describe('a worker that goes on after a passing failure', () => {
     agent.status = 'idle'
     h.ctx.emit('agent/status', { agent, status: 'idle' } as never)
     await vi.waitFor(() => expect(latestAssignment(ticket())?.report?.state).toBe('waiting'))
-    fail()
-    await h.runtime.idle()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      fail()
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(told(one.sessionId)).toHaveLength(4)
+      expect(new Set(told(one.sessionId).map(message => message.id)).size).toBe(4)
+      expect(agent.status).toBe('running')
+    } finally { vi.useRealTimers() }
     expect(latestAssignment(ticket())?.report?.state).toBe('waiting')
   })
   it('waits while processing is paused, and goes on once it resumes', async () => {

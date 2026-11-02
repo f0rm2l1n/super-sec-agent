@@ -1,39 +1,37 @@
-# dsh-superagent
+# BrainAFK Super
 
-> **Research prototype for reference only, not an official DeepSeek product.** This code grew out of our team's day-to-day development work, with much of the engineering done by coding agents. Treat it as research code, not production-ready software. It may still contain bugs, and its coding style and engineering practices may be inconsistent. Review and adapt it before using it in your own environment.
->
-> We have adapted it for publication, so it is not identical to our internal version or the implementation described in *Exploring Super-agent Design: Towards a More Autonomous Agent System*. Some designs discussed in the article are directions for future development and are not implemented in this prototype.
+**为每个项目配一位能长期积累安全知识、回答问题，并与用户共同解决新问题的安全专家。**
 
-dsh-superagent is a proactive coding agent for one GitHub repository, packaged as a bundle for [DeepSeek Harness](https://www.deepseek.com/en/harness/). It listens to GitHub and, optionally, Feishu. When someone allowed asks the agent for work, it opens a work item, works on it in its own agent session and directory, and answers in the original conversation, for example with a pull request. A web panel shows what needs a person.
+项目从 [DeepSeek Super-agent](https://github.com/deepseek-ai/dsh-superagent-prototype) fork，在定制分支直接开发。当前已支持本地研究工作区、源码版本锁定，以及管理面板中的提问、专家纠正和持久研究会话；启动本地模式无需 GitHub 账号或推送权限。已接入可启停的持续研究调度、文件检查点与研究前沿；长期知识质量和专家效果仍需验证。以下描述产品目标。
 
-It is also a way of working with an agent: **take as little human attention as possible, and give as much value as possible.** An agent that can act for a whole team can also waste a whole team's attention, so it acts only when asked or when a rule the team wrote allows it, and speaks only when someone must act or can use a result. [docs/000-philosophy.md](docs/000-philosophy.md) explains the principle and what it asks of the operator.
+## 角色与职责
 
-## Setup
+BrainAFK Super 的角色是**懂攻也懂防的驻项目安全专家**。它持续研究一个指定 Git 项目及关注的版本或分支，理解项目如何受到攻击、已有安全机制如何提供保护，以及这些保护的适用条件和失效边界，成为研发、安全研究、审计、渗透测试与运维人员可以长期合作的伙伴。
 
-Setup has many steps, so an agent does it with you. Ask your coding agent:
+它不再以完成某个任务作为全部职责，而是持续积累和维护项目安全知识：
 
-> Read SETUP.md in this repository and set up dsh-superagent with me.
+- **平时自主研究**：理解安全目标、关键模块、攻击路径和防护设计，研究历史漏洞与修复，借鉴外部同类项目，选择值得深入的问题。
+- **理解产品防护**：掌握认证授权、隔离、加密与密钥管理、输入处理、资源限制、安全配置和审计等机制，解释它们保护什么、如何生效、覆盖哪里，以及有什么局限。
+- **随项目更新**：关注新 commits，也追踪它们对旧代码、安全机制、安全前提和已有结论的影响。
+- **有问题时提供帮助**：结合代码与历史证据回答用户，给出适用条件和不确定之处。
+- **遇到未知共同研究**：明确缺少什么，提出并推进调查，与用户交换证据，把形成的新理解沉淀下来。
 
-It asks one short question at a time, shows the full plan once, and then installs and configures everything. [SETUP.md](SETUP.md) is what it follows.
+例如，用户既可以问“普通用户能否通过后台导出跨租户读取数据”，也可以问“项目靠哪些机制保证导出任务的租户隔离，部署时需要哪些配置”。它应能利用已有积累解释相关入口、分层防护、历史修复和待确认条件；如果证据不足，就继续与用户调查。
 
-## Documentation
+## 产品重点
 
-Read the numbered documents in order; each builds only on the ones before it.
+知识积累同时服务于风险判断和防护理解：优先理解保护关键资产的安全机制，研究可能导致代码执行、权限提升、认证或授权绕过、跨租户访问、重大数据泄露及关键服务不可用的问题。资源有限时，根据安全影响、知识缺口和用户当前需求选择研究方向。
 
-- [000 Philosophy](docs/000-philosophy.md)
-- [001 Domain model](docs/001-domain.md)
-- [002 Authorization](docs/002-authorization.md)
-- [003 Execution](docs/003-execution.md)
-- [004 Prompts](docs/004-prompts.md)
-- [005 Panel](docs/005-panel.md)
-- [006 Deployment](docs/006-deployment.md): manual setup, configuration, upgrades and troubleshooting
-- [007 Architecture](docs/007-architecture.md)
-- [008 Cookbook](docs/008-cookbook.md): adding a Source
+全量代码是研究范围，新 commits 是持续更新的线索。安全机制解释、设计评估、配置建议、审计、CVE 排查和安全测试都是专家可以开展的工作，产品价值要体现在长期积累如何帮助团队理解、检查和改进项目安全。
 
-## Development
+动态验证、PoC、专门的准确率提升流程等能力按需接入已有系统，不在本项目重复开发。具体执行边界、资源预算和第一版集成方式仍需验证。
 
-`pnpm check` runs the typecheck, the tests and the build.
+## 文档
 
-## License
+- [开发与本地运行](docs/DEVELOPMENT.md)
+- [标准项目安全工作区与迁移](docs/WORKSPACES.md)
+- [产品愿景与驻项目安全专家的工作方式](docs/VISION.md)
+- [v0.1 最小验证场景与分阶段验收草案](docs/V0.1.md)
+- [相关项目、差异与复用方向](docs/REFERENCES.md)
 
-[MIT](LICENSE)
+每个可用增量先用开源同类项目和外部 AI 算力检验，随后尽早进入内部项目和内部算力环境。当前没有已验证的效果、成本或性能承诺。

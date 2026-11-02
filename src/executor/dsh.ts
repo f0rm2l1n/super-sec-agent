@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { randomUUID } from 'node:crypto'
 import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
@@ -67,7 +68,7 @@ export interface ExecutorHost {
   readonly effects: Pick<Effects, 'enqueue' | 'handle'>
   /** The `worker` health entry, which reports whether background worker event handling failed. */
   readonly health: HealthEntry
-  readonly machine: Pick<Machine, 'stateDir'>
+  readonly machine: Pick<Machine, 'stateDir' | 'workspace'>
   readonly lifetime: AbortSignal
   /** Session manager for worker sessions and for relaying worker reports to the main Session. */
   readonly sessions: Pick<Sessions, 'ensure' | 'prompt' | 'promptedId' | 'relay' | 'holds'>
@@ -120,6 +121,7 @@ const capped = (text: string, limit: number, read: string) =>
  */
 export function triggerMessage(trigger: Trigger, link: { source_url?: string; source_url_read?: string }, note?: string, repliesTo?: Trigger) {
   return { trigger_id: trigger.id, from: trigger.actor.id, thread: threadKey(trigger.threads[0]!), at: trigger.at,
+    ...(trigger.source === 'local' ? { request_kind: trigger.meta.kind } : {}),
     ...capped(trigger.text, TRIGGER_CHARS, `trigger/${trigger.id}`), ...link, ...(note ? { routing_note: note } : {}),
     ...(repliesTo ? { replies_to: { trigger_id: repliesTo.id, preview: repliesTo.text.replace(/\s+/g, ' ').slice(0, 160) } } : {}) }
 }
@@ -236,7 +238,11 @@ export class DshExecutor implements Executor {
   }
   /** Populates a newly accepted ticket's `execution` attributes (worktree name, workspace directory, and assignment text). */
   prepare(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Ticket {
-    return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir) }
+    const execution = ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir)
+    if (this.host.machine.workspace && this.host.store.triggers.get(ticket.origin.triggerId)?.source === 'local') {
+      execution.directory = this.host.machine.workspace
+    }
+    return { ...ticket, execution }
   }
   /**
    * Runs the configured `executor.prepare` command for a new ticket workspace in its parent directory with the ticket's
@@ -554,6 +560,9 @@ export class DshExecutor implements Executor {
   /** Schedules a worker turn retry with exponential backoff after a transient provider or network error. */
   private resumeAfter(ticketId: string, assignmentId: string, error: unknown): void {
     const tries = this.transient.get(assignmentId)!
+    // A persistent assignment can fail again after a successful turn. Retry counts
+    // reset then, but the delivery deduplication key must never be reused.
+    const requestId = `retry:${assignmentId}:${randomUUID()}`
     const text = `Your last turn failed for a passing reason (${String(error).slice(0, 200)}). Continue the assignment where it stopped.`
     this.resuming.add(assignmentId)
     const go = () => {
@@ -568,7 +577,7 @@ export class DshExecutor implements Executor {
         if (!(failure instanceof Later)) throw failure
         this.after(SLOT_WAIT_MS, go); return
       }
-      const sent = this.host.sessions.prompt(sessionId, `retry:${assignmentId}:${tries}`, text, 'queue')
+      const sent = this.host.sessions.prompt(sessionId, requestId, text, 'queue')
       void this.background(sent.finally(() => { if (waking) this.slots.free(ticketId); this.resuming.delete(assignmentId) })
         .catch(failure => { this.failed(ticketId, String(failure)) }))
     }

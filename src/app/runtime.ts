@@ -19,7 +19,8 @@ import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
-import type { SetupProblem } from '../setup.ts'
+import { SetupError, type SetupProblem } from '../setup.ts'
+import { LocalResearch, localKind } from '../security/local-research.ts'
 import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
 import { ticketCard } from './cards.ts'
 import { MasterAssessor } from './assessment.ts'
@@ -71,6 +72,7 @@ export class Runtime extends Service implements SourceHost {
   readonly engine: Engine
   readonly passes: Passes
   readonly ready: Promise<void>
+  research?: LocalResearch
   private readonly board = new HealthBoard()
   private readonly runtimeHealth = this.board.claim('runtime', { state: 'starting', detail: '' })
   readonly masterId: string
@@ -112,6 +114,7 @@ export class Runtime extends Service implements SourceHost {
           .catch(() => { /* sync() records its failure in health. */ })
         return () => {}
       })
+      if (machine.workspace) this.disposers.push(sources.register(localKind))
       const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
       const link = (trigger: Trigger, signal?: AbortSignal) => sourceLink(links, trigger, signal)
       const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)
@@ -153,13 +156,14 @@ export class Runtime extends Service implements SourceHost {
         } })
       // Update the `evals` health entry on every pass if an evaluation failed as unavailable within the last hour.
       const evals = board.claim('evals', { state: 'ready', detail: 'No unavailable Eval in the last hour' })
-      const evaluateDue = () => { engine.evaluateDue(); evals.set(evalsHealth(store)) }
+      const evaluateDue = () => { engine.evaluateDue(); this.research?.continuous.tick(); evals.set(evalsHealth(store)) }
       const passes = this.passes = new Passes({ engine: { receive: trigger => engine.receive(trigger), evaluateDue }, effects,
         health: this.runtimeHealth, lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing() })
       this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
         get deployment() { return setup.deployment }, configured: () => setup.configured(),
         get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
+        get research() { return runtime.research?.continuous },
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
@@ -205,6 +209,19 @@ export class Runtime extends Service implements SourceHost {
       this.runtimeHealth.set({ ...health('paused', 'setupPending'), at: now() })
       return
     }
+    if (this.deployment.local) {
+      try {
+        this.research = new LocalResearch(this.deployment.local.workspace, {
+          store: this.store, prompts: this.prompts, engine: this.engine, receive: trigger => this.receive(trigger),
+          idle: id => this.ctx.agents.get(workerSessionId(id) as SessionId)?.status === 'idle',
+          cancel: id => { this.ctx.agents.get(workerSessionId(id) as SessionId)?.cancel({ kind: 'user' }, { keepInbox: true }) },
+        })
+      } catch (error) {
+        this.setup.invalidate(new SetupError('localWorkspaceInvalid', { output: error instanceof Error ? error.message : String(error) }))
+        this.runtimeHealth.set({ ...health('paused', 'setupPending'), at: now() })
+        return
+      }
+    }
     this.sessions.install()
     this.executor.install()
     await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
@@ -212,14 +229,25 @@ export class Runtime extends Service implements SourceHost {
     // If stop() was called while awaiting setup, session creation, or policy sync, do not start background loops.
     if (this.closing()) return
     this.executor.resume()
+    // Settled assignments need no launch effect after restart. Reopen their local
+    // worker without prompting it so autonomous scheduling can observe its idle state.
+    if (this.deployment.local) {
+      for (const ticket of this.store.tickets.open()) {
+        if (this.store.triggers.get(ticket.origin.triggerId)?.source !== 'local') continue
+        await this.sessions.ensure(workerSessionId(ticket.id), this.deployment.local.workspace, ticket.title, 'worker')
+      }
+    }
+    if (this.closing()) return
     this.passes.start()
     this.effects.start()
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
   }
   private httpHost(): HttpHost {
     const runtime = this
-    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes } = this
-    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks,
+    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, sourceLinks, setup, passes } = this
+    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, sourceLinks,
+      get ready() { return runtime.ready },
+      get research() { return runtime.research },
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),

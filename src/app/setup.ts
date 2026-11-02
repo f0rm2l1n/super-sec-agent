@@ -41,6 +41,11 @@ export class Setup {
     return this.resolved
   }
   configured(): boolean { return this.resolved !== undefined }
+  invalidate(error: SetupError): void {
+    this.resolved = undefined
+    this.problem = error.problem
+    this.restore()
+  }
   /** Resolve deployment accounts and apply the worker environment, recording `SetupError` failures in `problem`/`feishuProblem` and rethrowing unexpected errors. */
   async run(settings: Settings): Promise<boolean> {
     try { this.resolved = await this.resolve(settings); return true }
@@ -60,6 +65,7 @@ export class Setup {
   /** Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks. */
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
     const { machine } = this.host
+    if (machine.workspace) return
     const check = block === 'source:feishu' ? resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
       : resolveDeployment(machine, settings.sources.github?.config, this.probe())
     await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
@@ -77,6 +83,11 @@ export class Setup {
     const { context, machine, lifetime } = this.host
     const probe = this.probe()
     const deployment = await resolveDeployment(machine, settings.sources.github?.config, probe)
+    if (deployment.local) {
+      await writeEnvironment(deployment, settings.executor.blockedCommands)
+      this.restoreEnvironment = applyEnvironment(this.variables, machine.stateDir, this.path)
+      return deployment
+    }
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.feishuProblem = error.problem

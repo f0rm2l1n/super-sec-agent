@@ -9,6 +9,7 @@ export function preview(text: string): string { return text.replace(/\s+/g, ' ')
 export function triggerCard(trigger: Trigger, disposition?: TriggerDisposition) {
   return { trigger_id: trigger.id, source: trigger.source, ...(trigger.url ? { source_url: trigger.url } : {}), actor: trigger.actor.id, thread: threadKey(trigger.threads[0]!), human: trigger.human, at: trigger.at,
     preview: preview(trigger.text), chars: trigger.text.length, read: `trigger/${trigger.id}`,
+    ...(trigger.source === 'local' ? { request_kind: trigger.meta.kind } : {}),
     ...(disposition ? { disposition: { ...(disposition.filtered ? { filtered: reasonText(disposition.filtered) } : {}),
       ...(disposition.decisionId ? { decision_id: disposition.decisionId } : {}),
       delivered_to: disposition.fanout } } : {}) }

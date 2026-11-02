@@ -85,6 +85,8 @@ export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000
 
 type Settings = ReturnType<typeof SettingsSchema.parse>
 export interface PanelServer {
+  research?: ApiResponse<'GET research'>
+  researchError?: string
   joined?: Record<string, string>; joining?: Record<string, string>
   joinError?: string
   settings: Settings; revisions: Record<string, number>
@@ -291,6 +293,23 @@ const ticketOf = (id: string) =>
 const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown() })
 
 const ROUTES: { [K in keyof Api]: Route<K> } = {
+  'POST research/continuous': { body: true, answer: ({ body }) => {
+    if (!server.research) return refuse(400, 'Local research workspace is not ready')
+    const { enabled } = body as { enabled: boolean }
+    server.research.continuous.enabled = enabled
+    server.research.continuous.status = enabled ? 'waiting' : 'paused'
+    return server.research.continuous
+  } },
+  'GET research': { answer: () => server.research ?? null },
+  'POST research/messages': { body: true, answer: ({ body }) => {
+    if (server.researchError) return refuse(500, server.researchError)
+    if (!server.research) return refuse(400, 'Local research workspace is not ready')
+    const message = body as { id: string; text: string; kind: string }
+    const id = `local:${message.id}`
+    const duplicate = server.research.messages.some(message => message.id === id)
+    if (!duplicate) server.research.messages.push({ ...message, id, at: new Date().toISOString(), replies: [] })
+    return { id, duplicate }
+  } },
   'GET state': { answer: stateView },
   'GET overview': { answer: overviewView },
   'GET search': { query: ['q'], answer: async ({ query }) => {
