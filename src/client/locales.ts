@@ -6,6 +6,30 @@ import { SETUP_PROBLEMS } from '../setup.ts'
 import { HEALTH_TEXT } from '../sources/host.ts'
 
 const TEXT = {
+  'source.local': ['本地研究', 'Local research'],
+  'research.continuous': ['持续研究', 'Continuous research'],
+  'research.start': ['开始 / 恢复研究', 'Start / resume research'],
+  'research.pause': ['本轮后暂停', 'Pause after this round'],
+  'research.rounds': ['已完成轮数', 'Completed rounds'],
+  'research.checkpoints': ['研究检查点与知识产物', 'Research checkpoints and artifacts'],
+  'research.continuousHelp': ['自主选择安全问题，写下有源码依据的知识后推进下一轮。用户请求优先；暂停后当前轮可完成并保存。', 'Selects security questions and persists source-backed knowledge before continuing. User requests take priority; pause lets the current round finish.'],
+  'research.loop.paused': ['已暂停调度', 'Scheduling paused'],
+  'research.loop.blocked': ['需要处理阻塞', 'Blocked'],
+  'research.loop.system-paused': ['系统暂停', 'System paused'],
+  'research.loop.user-priority': ['优先处理用户请求', 'Handling user request'],
+  'research.loop.researching': ['正在研究', 'Researching'],
+  'research.loop.waiting': ['等待下一轮', 'Waiting for next round'],
+  'research.title': ['项目安全专家', 'Project security expert'],
+  'research.sources': ['研究源码版本', 'Source revisions'],
+  'research.kind': ['消息类型', 'Message type'],
+  'research.question': ['问题 / 研究请求', 'Question / research request'],
+  'research.correction': ['专家纠正', 'Expert correction'],
+  'research.message': ['告诉专家你的问题或纠正', 'Your question or correction'],
+  'research.help': ['请求会保存到工作区并交给研究会话。打开会话可查看实时过程；最终回复显示在下方。', 'Requests are saved in the workspace and delivered to the research session. Open it for live progress; replies appear below.'],
+  'research.sent': ['已交给专家处理。可继续追问，也可打开研究会话。', 'Submitted. You can follow up or open the research session.'],
+  'research.send': ['发送', 'Send'],
+  'research.sending': ['正在发送…', 'Sending…'],
+  'research.empty': ['尚无问题。从一个具体安全机制或疑问开始。', 'No questions yet. Start with a security mechanism or a concrete question.'],
   // Shared
   title: ['Superagent', 'Superagent'],
   close: ['关闭', 'Close'],
@@ -725,6 +749,7 @@ const TEXT = {
   'userError.noLabels': ['这个来源没有可以刷新的名称。', USER_ERRORS.noLabels[1]],
   'userError.nothingToSync': ['{source} 来源上的策略没有指定从哪里同步，或者这个来源已关闭或在等待部署检查。', USER_ERRORS.nothingToSync[1]],
   // Setup problems and health codes; English reuses the host's own text read by the log and main Session
+  'setup.localWorkspaceInvalid': ['本地研究工作区无效，请检查路径、版本锁及源码状态。', 'The local research workspace is invalid; check its path, version lock and source checkouts.'],
   'setup.repositoryUnset': ['GitHub 来源没有设置监听的仓库。', SETUP_PROBLEMS.repositoryUnset[1]],
   'setup.foreignFile': ['{file} 不是 dsh-superagent 写入的文件；移走它，或换一个状态目录。', SETUP_PROBLEMS.foreignFile[1]],
   'setup.gitTooOld': ['git 没有读取 dsh-superagent 为 github.com 写的凭据配置；需要 git 2.32 或更新版本。', SETUP_PROBLEMS.gitTooOld[1]],

@@ -37,6 +37,7 @@ Shutdown cancels turns, waits for passes, effects and agents, restores the proce
 | Part | Module | Does |
 | --- | --- | --- |
 | Setup | `src/app/setup.ts` | Resolves the repository and the accounts by probing their CLIs the way worker shells run them, writes and applies the workers' environment and command shims, and keeps the setup problems; Settings checks a changed account through it, and restarts through it, which runs setup again |
+| ContinuousResearch | `src/security/continuous-research.ts` | Durable autonomous research rounds, verified file checkpoints, prioritized research frontier, human priority and restart recovery on the existing Engine ticket |
 | Passes | `src/app/passes.ts` | One pass at a time, every two seconds and whenever a command asks: the due effects, then `Engine.evaluateDue`; a Source's Trigger reaches the Engine through it |
 | Outbox | `src/app/outbox.ts` | The Engine's `Outbox` port, and the only writer of the receipts: `send` keeps a message's receipt and queues its `reply` effect in one transaction, and the effect's handler sends it through `SourceRegistry.send`; a message waits while its Source is off, and is dropped when the conversation is gone or not listened to |
 | Notices | `src/app/notices.ts` | Converts domain events and worker activity into main-Session messages. `eventNotice` handles domain notices; `reportRelay` forwards questions immediately, keeps ordinary progress on its Ticket, and relays other reports; `followupRelay` names the Tickets that own a human follow-up. Relays arriving during a turn are delivered together at its next step through the DeepSeek Harness inbox |
@@ -288,6 +289,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 
 ## Modules
 
+This fork adds project-security profile generation. The remaining modules below originate from the pinned upstream baseline; retained optional source code does not imply a supported product integration.
+
 | Path | Responsibility |
 | --- | --- |
 | `src/index.ts` | The main plugin entry: reads the machine settings, starts the Runtime, and gives it the restart that a save of a Source's account uses |
@@ -327,6 +330,13 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/settings.ts` | Settings |
 | `src/app/settings-history.ts` | `policyHistory`: each saved settings revision with what it changed from the one before |
 | `src/app/prompts.ts` | Prompts, `builtInParts`, the built-in parts a team may override, and `promptParts`, the order of a role's prompt sections |
+| `src/security/project.ts` | Resolve a local research target to a fixed commit without modifying its checkout |
+| `src/security/security-profile.ts` | Generate the resident security expert's configuration using the existing prompt interfaces |
+| `src/security/workspace.ts` | Initialize portable project-security workspaces, pin and check multiple source revisions, prepare research profiles |
+| `src/security/cli.ts` | Initialize, lock, check and prepare project workspaces; generate and preview expert configurations |
+| `src/security/continuous-research.ts` | Persist and schedule bounded autonomous rounds, validate changed knowledge and source evidence, wait for human requests and recover checkpoints across restarts |
+| `src/security/local-research.ts` | Bind a local workspace and expert profile, ingest durable questions/corrections and expose replies without GitHub |
+| `src/client/research.tsx` | Local research form, message/reply history and persistent worker session links |
 | `src/app/context.ts` | The built-in prompt text, read from `prompts/`, and the transcript entries Sessions read |
 | `src/app/skill-files.ts` | Packaged text: `promptFile`, which joins a file's one-sentence lines into paragraphs, and the bundled skills |
 | `src/app/sessions.ts` | Sessions |
@@ -397,7 +407,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
+`src/sources/github.ts` and the retained legacy `src/sources/feishu.ts` are also Source plugin entries, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. This fork's `cordis.patch.yml` inserts the core and GitHub plugins; it does not insert the Feishu plugin.
 
 ## Tests
 
@@ -433,6 +443,10 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
 | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts` and the migration, settings history and queries |
 | `tests/prompts.spec.ts` | Prompt validation, assembly and versions |
+| `tests/security-profile.spec.ts` | Expert profile validation, prompt persistence and immutable target revision resolution |
+| `tests/security-workspace.spec.ts` | Multi-repository scope, relocation with retained knowledge, revision drift and source boundaries |
+| `tests/local-research.spec.ts` | Account-free startup, persistent local worker, questions/corrections/replies, restart recovery and workspace binding |
+| `tests/panel-research.spec.tsx` | Local research submission, error recovery, deduplicated retries and session navigation |
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | The plugin configuration and setup, the agent's process environment, the plugin entry |

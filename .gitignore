@@ -3,3 +3,28 @@ lib/
 .artifacts/
 .env
 coverage/
+
+# Local upstream reference checkouts; keep their histories independent.
+/deepseek-harness/
+/dsh-superagent-prototype/
+
+# Runtime data and local credentials.
+/.env
+/.env.*
+!/.env.example
+/runs/
+/workspaces/
+/artifacts/
+/coverage/
+*.sqlite
+*.sqlite3
+*.db
+*.log
+
+# Local dependencies and build output.
+node_modules/
+__pycache__/
+.venv/
+/dist/
+/build/
+.DS_Store

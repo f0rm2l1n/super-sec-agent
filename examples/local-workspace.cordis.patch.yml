@@ -1,0 +1,12 @@
+# A dedicated DSH profile for ONE local security workspace.
+# Replace all placeholders. See docs/DEVELOPMENT.md for creating a new profile.
+- id: webserver
+  config:
+    host: 127.0.0.1
+    port: 3082
+- id: dsh-superagent
+  config:
+    stateDir: <absolute path to a new state directory for this project>
+    workspace: <absolute path to the standard security workspace>
+- id: dsh-superagent-github
+  disabled: true
