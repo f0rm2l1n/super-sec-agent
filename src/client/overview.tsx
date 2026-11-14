@@ -72,10 +72,12 @@ export function OverviewPage() {
     onClick={() => navigate(route)}>{t('details')}</button>
   return <>
     {error && <LoadState error={error} loading={false} />}
-    <Section title={t('pendingTickets')} count={data.person.length}>
-      {data.person.length ? <ul className="dt-list dt-cards">{data.person.map(ticket => <TicketLine key={ticket.id} ticket={ticket} question
-        onChanged={reload} />)}</ul>
-        : <Hint>{t('needsYouNone')}</Hint>}
+    <Section title={t('pendingTickets')} count={data.person.length} hint={t('pendingTicketsHint')} icon="ask">
+      <div className="dt-overview-pending">
+        {data.person.length ? <ul className="dt-list dt-cards">{data.person.map(ticket => <TicketLine key={ticket.id} ticket={ticket} question
+          onChanged={reload} />)}</ul>
+          : <Hint>{t('needsYouNone')}</Hint>}
+      </div>
     </Section>
     {data.problems.length > 0 && <Section title={t('problems')} count={data.problems.length}>
       <ul className="dt-list dt-cards">{data.problems.map((problem, index) => <ProblemLine key={index} problem={problem}

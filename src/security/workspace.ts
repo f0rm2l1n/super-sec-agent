@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { packagePath } from '../infra/paths.ts'
 import { z } from 'zod'
 import { resolveProjectContext } from './project.ts'
@@ -13,9 +14,14 @@ const sourcePath = z.string().refine(value => value.startsWith('sources/')
 'Expected a workspace-relative path under sources/')
 
 const SourceSchema = z.object({
-  id, path: sourcePath, url: z.string().min(1), ref: z.string().min(1),
+  id, path: sourcePath, kind: z.enum(['git', 'directory']).default('git'),
+  url: z.string().min(1).optional(), ref: z.string().min(1).optional(),
   role: z.enum(['subject', 'dependency', 'reference']), purpose: z.string().min(1),
-}).strict()
+}).strict().superRefine((source, context) => {
+  if (source.kind === 'git' && (!source.url || !source.ref)) {
+    context.addIssue({ code: 'custom', path: ['kind'], message: 'Git sources require url and ref' })
+  }
+})
 
 export const WorkspaceSchema = z.object({
   schemaVersion: z.literal(1), id, name: z.string().min(1), topic: z.string().trim().min(1).max(1000),
@@ -49,6 +55,24 @@ function git(path: string, ...args: string[]) {
   return execFileSync('git', ['-C', path, ...args], {
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
   }).trim()
+}
+
+function directoryRevision(path: string) {
+  const hash = createHash('sha256')
+  const walk = (directory: string, prefix: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.name === '.git') continue
+      const child = join(directory, entry.name), relativePath = `${prefix}${entry.name}`
+      if (entry.isSymbolicLink()) continue
+      if (entry.isDirectory()) { walk(child, `${relativePath}/`); continue }
+      if (entry.isFile()) {
+        hash.update(`${relativePath}\0`)
+        hash.update(readFileSync(child))
+      }
+    }
+  }
+  walk(path, '')
+  return hash.digest('hex')
 }
 
 /** Real paths must remain in this workspace, including after moving it. */
@@ -97,23 +121,34 @@ function inspectSources(workspace: ReturnType<typeof readWorkspace>, pinned?: z.
   }
   return config.sources.map(source => {
     const path = inside(inside(root, 'sources'), source.path.slice('sources/'.length))
+    if (source.kind === 'directory') {
+      if (!statSync(path).isDirectory()) throw new Error(`Expected a directory source: ${source.id}`)
+      const currentRevision = directoryRevision(path)
+      const locked = pinned?.sources.find(item => item.id === source.id)
+      const registrationKeys = ['kind', 'path', 'role', 'purpose'] as const
+      if (pinned && (!locked || registrationKeys.some(key => source[key] !== locked[key]))) {
+        throw new Error(`Source registration changed: ${source.id}; review and run lock explicitly`)
+      }
+      if (locked && locked.revision !== currentRevision) throw new Error(`Directory baseline changed: ${source.id}`)
+      return { ...source, revision: currentRevision, shallow: false, sparseDirectories: [] }
+    }
     if (realpathSync(git(path, 'rev-parse', '--show-toplevel')) !== path) {
       throw new Error(`Expected a repository root: ${source.id}`)
     }
     const locked = pinned?.sources.find(item => item.id === source.id)
-    const registrationKeys = ['path', 'url', 'ref', 'role', 'purpose'] as const
+    const registrationKeys = ['kind', 'path', 'url', 'ref', 'role', 'purpose'] as const
     if (pinned && (!locked || registrationKeys.some(key => source[key] !== locked[key]))) {
       throw new Error(`Source registration changed: ${source.id}; review and run lock explicitly`)
     }
     const context = resolveProjectContext({
-      project: path, ref: locked?.revision ?? source.ref, topic: config.topic,
+      project: path, ref: locked?.revision ?? source.ref!, topic: config.topic,
       knowledgeDirectory: inside(root, 'knowledge'),
     })
     if (git(path, 'rev-parse', 'HEAD') !== context.revision) {
       throw new Error(`Checkout revision mismatch: ${source.id}`)
     }
     if (git(path, 'status', '--porcelain')) throw new Error(`Dirty source checkout: ${source.id}`)
-    if (git(path, 'remote', 'get-url', 'origin') !== source.url) throw new Error(`Source URL mismatch: ${source.id}`)
+    if (git(path, 'remote', 'get-url', 'origin') !== source.url!) throw new Error(`Source URL mismatch: ${source.id}`)
     const sparseSetting = spawnSync('git', ['-C', path, 'config', '--bool', 'core.sparseCheckout'], {
       encoding: 'utf8', timeout: 10_000,
     })
@@ -149,10 +184,10 @@ export function createWorkspaceProfile(directory: string) {
   const workspace = checkWorkspace(directory)
   const { root, config, scope, lock } = workspace
   const source = lock.sources.find(item => item.id === config.primarySource)!
-  const profile = createSecurityProfile(resolveProjectContext({
-    project: inside(root, source.path), ref: source.revision, topic: config.topic,
-    knowledgeDirectory: inside(root, 'knowledge'),
-  }))
+  const sourcePath = inside(root, source.path)
+  const profile = createSecurityProfile(source.kind === 'git'
+    ? resolveProjectContext({ project: sourcePath, ref: source.revision, topic: config.topic, knowledgeDirectory: inside(root, 'knowledge') })
+    : { repositoryPath: sourcePath, revision: source.revision, topic: config.topic, knowledgeDirectory: inside(root, 'knowledge') })
   profile.scope += [
     '\n\nProject security workspace: ' + root,
     'The primary source is an execution anchor. Study all relevant registered sources, including framework and dependencies.',

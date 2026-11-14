@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""One-command install, update and run entry point for an isolated Superagent-sec project.
+
+The script deliberately keeps project code, research workspace, runtime state,
+DSH home and secrets in separate locations. It never reads shell startup files;
+network settings are inherited from the environment or the SUPERAGENT_* aliases.
+"""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+ROOT = Path(__file__).resolve().parent.parent
+CONTROL = ROOT / '.artifacts' / 'deploy'
+
+
+def env_value(name, default):
+    value = os.environ.get(name)
+    return value if value else default
+
+
+PROFILE = env_value('SUPERAGENT_PROFILE', 'super-sec-agent')
+DSH_HOME = Path(env_value('DSH_SUPERAGENT_HOME', str(Path.home() / '.dsh-superagent' / PROFILE)))
+BACKEND_URL = env_value('SUPERAGENT_BACKEND_URL', 'http://127.0.0.1:3182').rstrip('/')
+WEB_PORT = int(env_value('SUPERAGENT_WEB_PORT', '3184'))
+WEB_HOST = env_value('SUPERAGENT_WEB_HOST', '127.0.0.1')
+TOKEN_FILE = Path(env_value('DSH_SUPERAGENT_ACCESS_TOKEN_FILE', str(DSH_HOME / 'secrets' / 'web-token')))
+PROXY_SESSION = 'dsh-web-' + PROFILE
+
+
+def command_environment():
+    result = os.environ.copy()
+    aliases = {
+        'SUPERAGENT_HTTP_PROXY': 'HTTP_PROXY',
+        'SUPERAGENT_HTTPS_PROXY': 'HTTPS_PROXY',
+        'SUPERAGENT_ALL_PROXY': 'ALL_PROXY',
+        'SUPERAGENT_NO_PROXY': 'NO_PROXY',
+        'SUPERAGENT_PNPM_REGISTRY': 'npm_config_registry',
+    }
+    for source, target in aliases.items():
+        if result.get(source):
+            result[target] = result[source]
+    result.update({
+        'DSH_HOME': str(DSH_HOME),
+        'DSH_SUPERAGENT_HOME': str(DSH_HOME),
+        'DSH_AGENTS_HOME': str(DSH_HOME / 'agents'),
+        'DSH_SUPERAGENT_PROFILE': PROFILE,
+        'DSH_SUPERAGENT_ACCESS_TOKEN_FILE': str(TOKEN_FILE),
+        'DSH_SUPERAGENT_BACKEND_PORT': BACKEND_URL.rsplit(':', 1)[-1],
+        'DSH_SUPERAGENT_WEB_HOST': WEB_HOST,
+        'DSH_SUPERAGENT_WEB_PORT': str(WEB_PORT),
+    })
+    return result
+
+
+def run(command, *, check=True, capture=False):
+    print('+ ' + ' '.join(str(part) for part in command), flush=True)
+    return subprocess.run(command, cwd=ROOT, env=command_environment(), check=check,
+                          text=True, capture_output=capture)
+
+
+def pnpm_command():
+    configured = os.environ.get('SUPERAGENT_PNPM_BIN') or os.environ.get('PNPM_BIN')
+    if configured:
+        path = Path(configured)
+        if path.suffix == '.mjs':
+            return [os.environ.get('SUPERAGENT_NODE_BIN') or shutil.which('node') or 'node', str(path)]
+        return [str(path)]
+    found = shutil.which('pnpm')
+    if found:
+        return [found]
+    candidates = [
+        Path('/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs'),
+        Path('/Applications/DeepSeek Harness.app/Contents/Resources/runtime/pnpm/bin/pnpm.mjs'),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return [shutil.which('node') or 'node', str(candidate)]
+    raise RuntimeError('pnpm not found; install pnpm or set SUPERAGENT_PNPM_BIN to pnpm or pnpm.mjs')
+
+
+def api(path, method='GET', body=None):
+    request = urllib.request.Request(BACKEND_URL + '/orchestrator/api/' + path.lstrip('/'),
+                                     method=method, headers={'x-orchestrator-request': '1'})
+    if body is not None:
+        request.data = json.dumps(body).encode()
+        request.add_header('content-type', 'application/json')
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=4) as response:
+        return json.load(response)
+
+
+def service(*args):
+    return run([str(ROOT / 'scripts' / 'dsh-superagent'), *args, '--profile', PROFILE, '--url', BACKEND_URL])
+
+
+def backend_ready():
+    try:
+        current = api('state')
+        return (current.get('health') or {}).get('runtime', {}).get('state') in ('ready', 'paused')
+    except (OSError, ValueError, urllib.error.URLError):
+        return False
+
+
+def proxy_running():
+    result = subprocess.run(['tmux', 'has-session', '-t', '=' + PROXY_SESSION], capture_output=True)
+    return result.returncode == 0
+
+
+def stop_proxy():
+    if proxy_running():
+        subprocess.run(['tmux', 'send-keys', '-t', PROXY_SESSION + ':0', 'C-c'], check=False)
+        deadline = time.monotonic() + 8
+        while proxy_running() and time.monotonic() < deadline:
+            time.sleep(.2)
+
+
+def start_proxy():
+    if proxy_running():
+        return
+    node = os.environ.get('SUPERAGENT_NODE_BIN') or shutil.which('node') or 'node'
+    command = ' '.join([shlex_quote(part) for part in [node, str(ROOT / 'scripts' / 'dsh-superagent-web-auth.mjs')]])
+    subprocess.run(['tmux', 'new-session', '-d', '-s', PROXY_SESSION, '-c', str(ROOT),
+                    'exec env ' + ' '.join(f'{shlex_quote(key)}={shlex_quote(value)}' for key, value in command_environment().items()
+                                           if key in {'DSH_HOME', 'DSH_SUPERAGENT_ACCESS_TOKEN_FILE', 'DSH_SUPERAGENT_BACKEND_PORT',
+                                                      'DSH_SUPERAGENT_WEB_HOST', 'DSH_SUPERAGENT_WEB_PORT'}) + ' ' + command], check=True)
+
+
+def shlex_quote(value):
+    import shlex
+    return shlex.quote(str(value))
+
+
+def install():
+    run(pnpm_command() + ['install', '--frozen-lockfile', '--prefer-offline'])
+    run(pnpm_command() + ['build'])
+
+
+def start():
+    install_if_needed()
+    service('start')
+    start_proxy()
+    print(f'Superagent-sec URL: http://{WEB_HOST}:{WEB_PORT}/?token=<read {TOKEN_FILE}>')
+
+
+def install_if_needed():
+    if not (ROOT / 'node_modules').is_dir():
+        install()
+    elif not (ROOT / 'lib' / 'client.js').exists():
+        run(pnpm_command() + ['build'])
+
+
+def stop():
+    stop_proxy()
+    service('stop')
+
+
+def pause_and_remember():
+    if not backend_ready():
+        return False
+    research = api('research')
+    enabled = bool((research.get('continuous') or {}).get('enabled'))
+    if enabled:
+        api('research/continuous', 'POST', {'enabled': False})
+        print('Continuous research paused for deployment update.', flush=True)
+    return enabled
+
+
+def restore_continuous(enabled):
+    if enabled:
+        deadline = time.monotonic() + 60
+        while not backend_ready() and time.monotonic() < deadline:
+            time.sleep(1)
+        api('research/continuous', 'POST', {'enabled': True})
+        print('Continuous research resumed after deployment update.', flush=True)
+
+
+def update():
+    if run(['git', 'status', '--porcelain'], capture=True).stdout.strip():
+        raise RuntimeError('Working tree is dirty; commit or stash local changes before update.')
+    was_enabled = pause_and_remember()
+    try:
+        stop_proxy()
+        if backend_ready():
+            service('stop')
+        run(['git', 'pull', '--ff-only'])
+        install()
+        service('start')
+        start_proxy()
+        restore_continuous(was_enabled)
+    except Exception:
+        print('Update failed; attempting to restore the previous service state.', file=sys.stderr)
+        try:
+            service('start')
+            start_proxy()
+            restore_continuous(was_enabled)
+        except Exception as recovery:
+            print(f'Recovery failed: {recovery}', file=sys.stderr)
+        raise
+
+
+def status():
+    service('status')
+    print(json.dumps({'branch': run(['git', 'branch', '--show-current'], capture=True).stdout.strip(),
+                      'backend': BACKEND_URL, 'web': f'http://{WEB_HOST}:{WEB_PORT}/',
+                      'profile': PROFILE, 'dsh_home': str(DSH_HOME), 'token_file': str(TOKEN_FILE),
+                      'proxy_running': proxy_running()}, ensure_ascii=False, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=['install', 'start', 'up', 'stop', 'restart', 'update', 'status'])
+    args = parser.parse_args()
+    CONTROL.mkdir(parents=True, exist_ok=True)
+    if args.action == 'install': install()
+    elif args.action in ('start', 'up'): start()
+    elif args.action == 'stop': stop()
+    elif args.action == 'restart': stop(); start()
+    elif args.action == 'update': update()
+    elif args.action == 'status': status()
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, RuntimeError, subprocess.CalledProcessError, urllib.error.URLError) as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)

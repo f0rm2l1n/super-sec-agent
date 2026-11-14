@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
@@ -62,6 +62,24 @@ it('prepares a multi-repository profile through the standard workspace, without 
   expect(existsSync(join(root, 'runtime/profile.json'))).toBe(false)
   expect(readFileSync(join(root, 'runtime/run.md'), 'utf8')).toBe(runbook)
   expect(git(join(root, 'sources/kernel'), 'status', '--porcelain')).toBe('')
+})
+
+it('supports a directory source with a content baseline', () => {
+  const root = setup()
+  const directory = join(root, 'sources/runtime-bundle')
+  mkdirSync(directory, { recursive: true })
+  writeFileSync(join(directory, 'config.json'), '{"mode":"checked"}\n')
+  const config = JSON.parse(readFileSync(join(root, 'project.json'), 'utf8'))
+  config.primarySource = 'runtime-bundle'
+  config.sources = [{ id: 'runtime-bundle', kind: 'directory', path: 'sources/runtime-bundle', role: 'subject', purpose: '运行时配置目录' }]
+  writeFileSync(join(root, 'project.json'), JSON.stringify(config, null, 2))
+  lockWorkspace(root)
+  const locked = checkWorkspace(root)
+  expect(locked.lock.sources[0]!.kind).toBe('directory')
+  expect(locked.lock.sources[0]!.revision).toHaveLength(64)
+  expect(createWorkspaceProfile(root).profile.scope).toContain('runtime-bundle')
+  writeFileSync(join(directory, 'config.json'), '{"mode":"changed"}\n')
+  expect(() => checkWorkspace(root)).toThrow(/baseline changed/)
 })
 
 it('relocates sources, knowledge and corrections without editing portable metadata', () => {

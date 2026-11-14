@@ -142,6 +142,10 @@ async function continuousWorker(root: string, options: { stateDir?: string; keep
   await idleWorker(h, sessionId)
   await h.runtime.pump(); await h.runtime.idle()
   expect(h.runtime.research!.continuous.view().active).not.toBeNull()
+  const note = h.runtime.store.tickets.get(ticket.id)!.inputs.find(input => input.kind === 'note')
+  expect(note?.text).toContain('具体研究问题由你根据当前项目、知识库和研究前沿自主选择')
+  expect(note?.text).toContain('evidencePlan')
+  expect(note?.text).not.toContain('结合已有研究，自主选择一个最值得弄清的项目安全机制')
   return { h, ticket, sessionId }
 }
 function checkpoint(h: Host, root: string) {
@@ -151,7 +155,7 @@ function checkpoint(h: Host, root: string) {
     summary: '确认源码入口并记录防护设计尚无实现证据，后续检查授权链。', outcome: 'continue',
     artifacts: ['knowledge/mechanisms/identity.md'],
     evidence: [{ source: 'main', path: 'auth.c', line: 1, claim: '当前锁定版本的入口仅包含 baseline 注释。' }],
-    next: [{ question: '授权检查在哪里生效，入口与执行路径是否共享相同权限边界？', reason: '跨模块权限差异影响隔离有效性，应优先核实。', priority: 5 }],
+    next: [{ question: '授权检查在哪里生效，入口与执行路径是否共享相同权限边界？', rationale: '跨模块权限差异影响隔离有效性，应优先核实。', hypothesis: '新增入口可能没有复用现有的租户授权边界。', evidencePlan: '对照入口、授权函数和执行路径的源码及运行证据。', stopCondition: '确认授权检查覆盖范围并记录反例或未知。', impact: 5, uncertainty: 4, feasibility: 4, status: 'open', provenance: 'agent' }],
   }
 }
 
@@ -166,6 +170,10 @@ it('autonomously advances from changed knowledge to the next question without a 
   const view = h.runtime.research!.continuous.view()
   expect(view.totalRounds).toBe(1)
   expect(view.active).toBeNull()
+  expect(view.candidates[0]).toMatchObject({
+    rationale: first.next[0]!.rationale,
+    hypothesis: expect.any(String), evidencePlan: expect.any(String), stopCondition: expect.any(String),
+  })
   expect(JSON.parse(readFileSync(join(root, 'runs/continuous-research', `${first.round_id}.json`), 'utf8')).evidence[0].revision).toMatch(/^[a-f0-9]{40}$/)
   expect((await h.runTool(sessionId, 'orchestrator_research_checkpoint', first))).toMatchObject({ duplicate: true })
   await idleWorker(h, sessionId)

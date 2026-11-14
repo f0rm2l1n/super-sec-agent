@@ -1,0 +1,15 @@
+.git
+.artifacts
+node_modules
+lib
+coverage
+workspaces
+runs
+artifacts
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
+*.db
+*.log

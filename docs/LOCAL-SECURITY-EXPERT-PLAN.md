@@ -9,6 +9,7 @@ This branch implements a local-network-first security expert while keeping `main
 - A project security workspace is the durable source of truth for source revisions, evidence, knowledge, reports, questions and corrections.
 - User requests and corrections have priority over autonomous research.
 - Autonomous work is bounded into resumable rounds with checkpoints, evidence references and a clear next frontier.
+- The host supplies a research charter; the expert chooses concrete questions and maintains a structured frontier.
 - Human questions pause only the blocked round; independent work may continue.
 - Parallel workers use separate round directories and a coordinator merges shared knowledge.
 - Local API and folder intake are explicit task channels; arbitrary project files are research data, not instructions.
@@ -40,7 +41,7 @@ The first implementation pass is complete on `security/local-expert` (2026-11-14
 | 2 | Local deployment profile with account probing bypassed and external Sources disabled | `tests/local-research.spec.ts` local startup case |
 | 3 | HTTP and folder intake with UUID idempotency and durable JSON records | `tests/local-research.spec.ts` request and inbox cases |
 | 4 | Durable local worker session, status view and local replies | `tests/local-research.spec.ts` local worker case; `tests/panel-research.spec.tsx` |
-| 5 | Bounded autonomous rounds, evidence checkpoints and restart recovery | continuous-research cases in `tests/local-research.spec.ts` |
+| 5 | Bounded autonomous rounds, structured proposals, evidence checkpoints and restart recovery | continuous-research cases in `tests/local-research.spec.ts` |
 | 6 | Corrections routed into the same project session | correction branch of the local worker case |
 | 7 | Worker questions, human-priority scheduling and independent checkpoint preservation | human-input and recovery cases in `tests/local-research.spec.ts` |
 | 8 | Source revision and scope drift block further research | drift case in `tests/local-research.spec.ts` and workspace tests |
@@ -77,6 +78,19 @@ Resolve conflicts by preserving upstream behavior in `src/core/`, generic source
 After a rebase, review `git diff --stat main...security/local-expert`, inspect every changed shared file, and verify that `main` is still identical to `upstream/main`. If an upstream feature makes a local hook unnecessary, remove the hook and its tests rather than adding another compatibility layer. The long-term extraction path is a companion package containing `src/security/` plus a small upstream host interface; this branch remains the integration staging area until that boundary is stable.
 
 When the service is exposed beyond localhost, it must sit behind company authentication or an authenticated reverse proxy. The local API header is an origin guard, not a complete network identity boundary.
+
+## Future work
+
+The current single-agent loop is the first implementation of the research protocol, not the final multi-agent design. The next increments should be implemented in this order:
+
+1. **Research quality evaluation** — run repeated real-project rounds and have a human review novelty, evidence quality, useful negative results, repeated questions and cost.
+2. **Frontier maintenance** — add deterministic duplicate detection, stale-item expiry, dependency links and explicit status transitions when evidence confirms or weakens a hypothesis.
+3. **Independent review** — add a second model or reviewer pass that checks the proposal and checkpoint against source evidence before a frontier item becomes the next default.
+4. **Planner/worker separation** — let a stronger model select and rank research directions while cheaper workers perform bounded evidence collection; keep the existing checkpoint contract between them.
+5. **Event-driven refresh** — re-open affected frontier items after source revision changes, new user corrections or new runtime evidence instead of relying only on periodic rounds.
+6. **Multi-project and parallel safety** — introduce separate project queues and merge rules only after one-project evidence quality is stable.
+
+Do not introduce multi-agent roles merely for naming or parallelism. Each additional role must improve a measured property such as evidence accuracy, novelty, coverage or cost.
 
 ## Future extraction
 

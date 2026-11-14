@@ -1,0 +1,46 @@
+services:
+  superagent-sec:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        DSH_VERSION: ${DSH_VERSION:-0.2.1-rc.3}
+    image: superagent-sec:${SUPERAGENT_IMAGE_TAG:-stable}
+    restart: unless-stopped
+    ports:
+      - "${SUPERAGENT_BIND_HOST:-127.0.0.1}:${SUPERAGENT_HOST_WEB_PORT:-3184}:3184"
+    environment:
+      SUPERAGENT_PROFILE: ${SUPERAGENT_PROFILE:-superagent-sec}
+      SUPERAGENT_APP_DIR: /workspace/super-sec-agent
+      SUPERAGENT_PROJECTS_DIR: /var/lib/superagent/projects
+      SUPERAGENT_PROJECT_ID: ${SUPERAGENT_PROJECT_ID:-default}
+      SUPERAGENT_WORKSPACE: ${SUPERAGENT_WORKSPACE:-/var/lib/superagent/projects/${SUPERAGENT_PROJECT_ID:-default}/workspace}
+      SUPERAGENT_STATE_DIR: /var/lib/superagent/state
+      DSH_HOME: /var/lib/superagent/dsh-home
+      DSH_SUPERAGENT_HOME: /var/lib/superagent/dsh-home
+      DSH_SUPERAGENT_ACCESS_TOKEN_FILE: /var/lib/superagent/secrets/web-token
+      DSH_SUPERAGENT_BACKEND_PORT: 3182
+      DSH_SUPERAGENT_WEB_HOST: 0.0.0.0
+      DSH_SUPERAGENT_WEB_PORT: 3184
+      SUPERAGENT_SSH_KEY_FILE: ${SUPERAGENT_SSH_KEY_FILE:-}
+      SUPERAGENT_SSH_STRICT_HOST_KEY_CHECKING: ${SUPERAGENT_SSH_STRICT_HOST_KEY_CHECKING:-accept-new}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY in the runtime environment}
+      HTTP_PROXY: ${SUPERAGENT_HTTP_PROXY:-}
+      HTTPS_PROXY: ${SUPERAGENT_HTTPS_PROXY:-}
+      ALL_PROXY: ${SUPERAGENT_ALL_PROXY:-}
+      NO_PROXY: ${SUPERAGENT_NO_PROXY:-127.0.0.1,localhost}
+      npm_config_registry: ${SUPERAGENT_PNPM_REGISTRY:-}
+    volumes:
+      # The checkout stays on the host. The image supplies the toolchain and
+      # the two child volumes supply writable dependencies/build output.
+      - ${SUPERAGENT_SOURCE_DIR:-..}:/workspace/super-sec-agent:ro
+      - superagent-node-modules:/workspace/super-sec-agent/node_modules
+      - superagent-lib:/workspace/super-sec-agent/lib
+      - ${SUPERAGENT_PROJECTS_DIR:-./.container-data/projects}:/var/lib/superagent/projects
+      - ${SUPERAGENT_DATA_DIR:-./.container-data}/state:/var/lib/superagent/state
+      - ${SUPERAGENT_DATA_DIR:-./.container-data}/dsh-home:/var/lib/superagent/dsh-home
+      - ${SUPERAGENT_DATA_DIR:-./.container-data}/secrets:/var/lib/superagent/secrets
+
+volumes:
+  superagent-node-modules:
+  superagent-lib:

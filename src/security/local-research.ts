@@ -155,8 +155,11 @@ export class LocalResearch {
     ).all().map(row => JSON.parse(String(row.value)) as Receipt).reverse()
     const tickets = this.host.store.tickets.open().filter(ticket =>
       this.host.store.triggers.get(ticket.origin.triggerId)?.source === 'local')
-    return { id: config.id, name: config.name, workspace: root, continuous: this.continuous.view(), inbox: this.inbox.view(),
-      sources: lock.sources.map(({ id, revision, role }) => ({ id, revision, role })),
+    const attention = tickets.find(ticket => ticket.attention)?.attention
+    return { id: config.id, name: config.name, workspace: root, continuous: this.continuous.view(),
+      attention: attention ? { question: attention.question, triggerId: attention.triggerId } : null,
+      inbox: this.inbox.view(),
+      sources: lock.sources.map(({ id, kind, path, revision, role }) => ({ id, kind, path, revision, role })),
       messages: requests.map(request => ({ id: request.id, text: request.text, at: request.at,
         kind: String(request.meta.kind),
         replies: replies.filter(reply => reply.channel.address.request === request.id)

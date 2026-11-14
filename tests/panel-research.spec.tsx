@@ -8,7 +8,7 @@ usePanel()
 it('keeps a failed question editable, retries with the same ID, and opens the research session', async () => {
   const local = { workspace: '/research/sample', id: 'sample', name: 'Sample' }
   server.setup = { ...server.setup, accounts: null, local }
-  server.research = { ...local, sources: [{ id: 'main', revision: 'a'.repeat(40), role: 'subject' }],
+  server.research = { ...local, attention: null, sources: [{ id: 'main', kind: 'git', path: 'sources/main', revision: 'a'.repeat(40), role: 'subject' }],
     continuous: { enabled: false, status: 'paused', active: null, error: undefined, rounds: [], totalRounds: 0, candidates: [], nextAt: new Date(0).toISOString() },
     inbox: { pending: 0, errors: 0 }, messages: [], sessions: [{ ticketId: 'local-ticket', sessionId: 'worker-local-ticket', title: 'Sample security' }] }
   await mount()
@@ -36,6 +36,6 @@ it('keeps a failed question editable, retries with the same ID, and opens the re
   await type(editor, '纠正：内核不负责这一层授权。')
   await click(zh['research.send'])
   expect(server.research!.messages.at(-1)?.kind).toBe('correction')
-  await click(`${zh.openSession} · Sample security`)
+  await click(zh['research.openSession'])
   expect(server.opened).toContain('worker-local-ticket')
 })

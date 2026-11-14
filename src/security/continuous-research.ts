@@ -6,28 +6,63 @@ import { canRetry, latestAssignment, liveTicket, type Engine, type Ticket } from
 import type { Store } from '../app/store.ts'
 import { record } from '../kv.ts'
 
-const Candidate = z.object({ question: z.string().trim().min(5).max(800), reason: z.string().trim().min(5).max(1200), priority: z.number().int().min(1).max(5) }).strict()
+const CandidateInput = z.object({
+  id: z.string().trim().min(1).max(120).optional(),
+  question: z.string().trim().min(5).max(800),
+  rationale: z.string().trim().min(5).max(1200),
+  hypothesis: z.string().trim().min(5).max(1600),
+  evidencePlan: z.string().trim().min(5).max(1600),
+  stopCondition: z.string().trim().min(5).max(1200),
+  impact: z.number().int().min(1).max(5),
+  uncertainty: z.number().int().min(1).max(5),
+  feasibility: z.number().int().min(1).max(5),
+  status: z.enum(['open', 'active', 'confirmed', 'weakened', 'blocked', 'exhausted']),
+  provenance: z.enum(['user', 'source', 'checkpoint', 'agent']),
+}).strict()
+type LegacyCandidate = { id?: string; question: string; rationale?: string; reason?: string; hypothesis?: string; evidencePlan?: string; stopCondition?: string; impact?: number; uncertainty?: number; feasibility?: number; priority?: number; status?: Candidate['status']; provenance?: Candidate['provenance'] }
+export interface Candidate {
+  id: string; question: string; rationale: string; hypothesis: string; evidencePlan: string; stopCondition: string
+  impact: number; uncertainty: number; feasibility: number
+  status: 'open' | 'active' | 'confirmed' | 'weakened' | 'blocked' | 'exhausted'
+  provenance: 'user' | 'source' | 'checkpoint' | 'agent'
+}
+const normalizeCandidate = (raw: LegacyCandidate): Candidate => ({
+  id: raw.id ?? `frontier-${randomUUID()}`,
+  question: raw.question,
+  rationale: raw.rationale ?? raw.reason ?? '填补当前项目安全知识缺口。',
+  hypothesis: raw.hypothesis ?? `需要验证：${raw.question}`,
+  evidencePlan: raw.evidencePlan ?? '检查锁定源码、已有知识和必要的真实运行证据。',
+  stopCondition: raw.stopCondition ?? '形成带源码或运行证据的结论，并记录反证与未知。',
+  impact: raw.impact ?? raw.priority ?? 3,
+  uncertainty: raw.uncertainty ?? 3,
+  feasibility: raw.feasibility ?? 3,
+  status: raw.status ?? 'open',
+  provenance: raw.provenance ?? 'agent',
+})
+const frontierScore = (candidate: Candidate) => candidate.impact * 3 + candidate.uncertainty * 2 + candidate.feasibility
 export const ResearchCheckpointSchema = z.object({
   round_id: z.string().uuid(), summary: z.string().trim().min(10).max(4000),
   outcome: z.enum(['continue', 'blocked', 'exhausted']),
   artifacts: z.array(z.string().min(1).max(500)).max(20),
   evidence: z.array(z.object({ source: z.string(), path: z.string(), line: z.number().int().positive(), claim: z.string().trim().min(5).max(1500) }).strict()).max(30),
-  next: z.array(Candidate).max(8),
+  next: z.array(CandidateInput).max(8),
   blocker: z.string().trim().min(5).max(1500).optional(),
 }).strict()
 type Checkpoint = z.infer<typeof ResearchCheckpointSchema>
 interface Round {
-  id: string; question: string; reason: string; startedAt: string; deadline: string
+  id: string; question: string; rationale: string; hypothesis: string; evidencePlan: string; stopCondition: string
+  startedAt: string; deadline: string
   baseline: Record<string, string>; inputId?: string; recoveries: number
 }
 export interface Completed {
-  id: string; question: string; at: string; summary: string; outcome: Checkpoint['outcome']
+  id: string; question: string; rationale: string; hypothesis: string; evidencePlan: string; stopCondition: string
+  at: string; summary: string; outcome: Checkpoint['outcome']
   artifacts: { path: string; sha256: string }[]; evidence: (Checkpoint['evidence'][number] & { revision: string })[]
   next: Checkpoint['next']; blocker?: string
 }
 interface State {
   enabled: boolean; ticketId?: string; active?: Round; completed: Completed[]
-  candidates: Checkpoint['next']; nextAt: string; error?: string
+  candidates: Candidate[]; nextAt: string; error?: string
 }
 const stateKey = record<State>('continuous-security-research-v1')
 const digest = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex')
@@ -54,14 +89,23 @@ export function pendingLocalRequests(store: Store, ticket: Ticket): string[] {
   for (const row of receipts) answered.add(String(row.request))
   return [...new Set([ticket.origin.triggerId, ...ticket.inputs.flatMap(input =>
     input.kind === 'trigger' && input.human && !input.context ? [input.triggerId] : [])])]
-    .filter(id => !answered.has(id) && store.triggers.get(id)?.human)
+    .filter(id => {
+      const trigger = store.triggers.get(id)
+      // The standing-research authorization is host-generated context, not a
+      // user request that should hold the autonomous scheduler indefinitely.
+      return !answered.has(id) && trigger?.human
+        && (id === ticket.origin.triggerId || !trigger.text.startsWith('启用持续项目安全研究：'))
+    })
 }
 
 /** Durable autonomous rounds on the existing project ticket, with verified file checkpoints and human priority. */
 export class ContinuousResearch {
   constructor(private readonly root: string, private readonly host: ContinuousHost) {}
   private state(): State {
-    return this.host.store.get(stateKey) ?? { enabled: false, completed: [], candidates: [], nextAt: new Date(0).toISOString() }
+    const saved = this.host.store.get(stateKey)
+    if (!saved) return { enabled: false, completed: [], candidates: [], nextAt: new Date(0).toISOString() }
+    const candidates = saved.candidates.map(candidate => normalizeCandidate(candidate as LegacyCandidate))
+    return { ...saved, candidates }
   }
   private save(state: State) { this.host.store.set(stateKey, state) }
   private pending(ticket: Ticket): boolean { return pendingLocalRequests(this.host.store, ticket).length > 0 }
@@ -69,15 +113,26 @@ export class ContinuousResearch {
     if (enabled) this.host.validate()
     const state = this.state()
     if (enabled && (!state.enabled || !!state.error)) {
-      const ticket = state.ticketId ? this.host.store.tickets.get(state.ticketId) : this.host.ticket()
-      if (ticket && !liveTicket(ticket)) throw new Error('Research ticket ended; open a new project conversation first')
-      state.ticketId = (state.ticketId ? ticket! : this.host.start()).id
+      let ticket = state.ticketId ? this.host.store.tickets.get(state.ticketId) : this.host.ticket()
+      // A completed or stopped project conversation cannot accept new worker
+      // notes. Starting research again creates a fresh authorized ticket while
+      // retaining the same workspace, frontier and completed checkpoints.
+      if (ticket && !liveTicket(ticket)) { delete state.ticketId; ticket = undefined }
+      state.ticketId = (ticket ?? this.host.start()).id
       const current = this.host.store.tickets.get(state.ticketId)
       if (current && canRetry(current)) this.host.engine.retryTicket(current.id)
       state.nextAt = new Date().toISOString(); delete state.error
       if (state.active) { state.active.deadline = new Date(Date.now() + ROUND_MS).toISOString(); state.active.recoveries = 0 }
     }
     // Pausing stops scheduling; the current bounded round may checkpoint before going idle.
+    if (!enabled && state.active) {
+      const current = state.ticketId ? this.host.store.tickets.get(state.ticketId) : undefined
+      if (!current || !liveTicket(current)) {
+        delete state.active
+        delete state.error
+        state.nextAt = new Date().toISOString()
+      }
+    }
     state.enabled = enabled; this.save(state)
     return this.view()
   }
@@ -86,7 +141,9 @@ export class ContinuousResearch {
     const human = !!ticket && this.pending(ticket)
     return { enabled: state.enabled,
       status: !state.enabled ? 'paused' : state.error ? 'blocked' : this.host.store.settings().paused ? 'system-paused' : human ? 'user-priority' : state.active ? 'researching' : 'waiting',
-      error: state.error, active: state.active ? { id: state.active.id, question: state.active.question, startedAt: state.active.startedAt, deadline: state.active.deadline } : null,
+      error: state.error, active: state.active ? { id: state.active.id, question: state.active.question, rationale: state.active.rationale,
+        hypothesis: state.active.hypothesis, evidencePlan: state.active.evidencePlan, stopCondition: state.active.stopCondition,
+        startedAt: state.active.startedAt, deadline: state.active.deadline } : null,
       nextAt: state.nextAt, rounds: state.completed.slice(-30), totalRounds: state.completed.length, candidates: state.candidates,
     }
   }
@@ -129,13 +186,15 @@ export class ContinuousResearch {
         || statSync(path).size > 5_000_000 || item.line > readFileSync(path, 'utf8').split('\n').length) throw new Error('Invalid source evidence')
       return { ...item, revision: source.revision }
     })
-    if (args.outcome === 'continue' && (!artifacts.length || !evidence.length || !args.next.length)) throw new Error('Continuing requires changed artifacts, source evidence and next questions')
+    const next = args.next.map(normalizeCandidate)
+    if (args.outcome === 'continue' && (!artifacts.length || !evidence.length || !next.length)) throw new Error('Continuing requires changed artifacts, source evidence and next research frontier')
     if (args.outcome === 'blocked' && !args.blocker) throw new Error('A blocker must explain the missing prerequisite')
-    const completed: Completed = { id: active.id, question: active.question, at: new Date().toISOString(), summary: args.summary,
-      outcome: args.outcome, artifacts, evidence, next: args.next, ...(args.blocker ? { blocker: args.blocker } : {}) }
+    const completed: Completed = { id: active.id, question: active.question, rationale: active.rationale, hypothesis: active.hypothesis,
+      evidencePlan: active.evidencePlan, stopCondition: active.stopCondition, at: new Date().toISOString(), summary: args.summary,
+      outcome: args.outcome, artifacts, evidence, next, ...(args.blocker ? { blocker: args.blocker } : {}) }
     this.host.store.atomic(() => {
       this.host.engine.report(ticketId, { state: 'progress', summary: `研究检查点 ${active.id}: ${args.summary}` })
-      state.completed.push(completed); state.candidates = args.next; delete state.active
+      state.completed.push(completed); state.candidates = next; delete state.active
       state.nextAt = new Date(Date.now() + GAP_MS).toISOString()
       if (args.outcome !== 'continue') state.error = args.blocker ?? '当前研究前沿已耗尽，需要新的方向。'
       this.save(state)
@@ -152,7 +211,18 @@ export class ContinuousResearch {
     if ((!state.enabled && !state.active) || state.error || this.host.store.settings().paused) return
     try {
       const ticket = state.ticketId ? this.host.store.tickets.get(state.ticketId) : undefined
-      if (!ticket || !liveTicket(ticket)) throw new Error('Research ticket ended or is missing')
+      if (!ticket || !liveTicket(ticket)) {
+        // An operator may stop the ticket while pausing research. Do not leave
+        // a stale round visible in the panel after that bounded round ends.
+        if (!state.enabled && state.active) {
+          delete state.active
+          delete state.error
+          state.nextAt = new Date().toISOString()
+          this.save(state)
+          return
+        }
+        throw new Error('Research ticket ended or is missing')
+      }
       if (ticket.delivery) throw new Error(`Input delivery failed: ${ticket.delivery.error}`)
       const assignment = latestAssignment(ticket)
       if (ticket.attention || ['blocked', 'failed'].includes(assignment?.report?.state ?? '')) throw new Error(ticket.attention?.question ?? assignment?.report?.summary ?? 'Worker stopped')
@@ -176,22 +246,27 @@ export class ContinuousResearch {
         if (state.active.recoveries >= 2) throw new Error('Worker ended repeatedly without a research checkpoint; inspect the session')
         state.active.recoveries++
       } else {
-        const candidate = [...state.candidates].sort((a, b) => b.priority - a.priority)[0] ?? {
-          question: '结合已有研究，自主选择一个最值得弄清的项目安全机制或信任边界，追踪攻击路径和防护条件。',
-          reason: '建立可复用的攻防知识，优先关键权限、输入可信度与跨模块边界；不要重复 first-contact。',
-        }
-        state.active = { id: randomUUID(), question: candidate.question, reason: candidate.reason,
+        const candidate = [...state.candidates].filter(item => item.status === 'open').sort((a, b) => frontierScore(b) - frontierScore(a))[0] ?? normalizeCandidate({
+          question: '审阅当前项目研究前沿，并选择一个最有安全价值且尚未充分验证的方向。',
+          rationale: '首次建立研究前沿，不预设具体模块或漏洞类型。',
+          hypothesis: '当前知识库仍存在一个值得用项目证据验证的安全未知。',
+          evidencePlan: '先读取项目范围、源码基线、已有知识、历史研究和未决问题，再决定具体验证路径。',
+          stopCondition: '形成一个具体、可验证的研究问题，并记录选择依据和首批证据。',
+          provenance: 'agent',
+        })
+        state.active = { id: randomUUID(), question: candidate.question, rationale: candidate.rationale,
+          hypothesis: candidate.hypothesis, evidencePlan: candidate.evidencePlan, stopCondition: candidate.stopCondition,
           startedAt: new Date().toISOString(), deadline: new Date(Date.now() + ROUND_MS).toISOString(), baseline: this.snapshot(), recoveries: 0 }
       }
       const active = state.active
       this.host.store.atomic(() => {
         const text = [
           'CONTINUOUS_RESEARCH_ROUND (host scheduling context under the operator\'s standing research mandate; not a new human request)',
-          JSON.stringify({ round_id: active.id, question: active.question, reason: active.reason, deadline: active.deadline, recovery: active.recoveries, frontier: state.candidates, recent: state.completed.slice(-3).map(round => ({ question: round.question, summary: round.summary, artifacts: round.artifacts.map(file => file.path) })) }),
-          '研究一项有价值的新问题，默认中文。先读已有知识与研究前沿，自主决定具体路径；关注攻击与防护，优先高安全影响。',
+          JSON.stringify({ round_id: active.id, proposal: { question: active.question, rationale: active.rationale, hypothesis: active.hypothesis, evidencePlan: active.evidencePlan, stopCondition: active.stopCondition }, deadline: active.deadline, recovery: active.recoveries, frontier: state.candidates, recent: state.completed.slice(-3).map(round => ({ question: round.question, summary: round.summary, artifacts: round.artifacts.map(file => file.path) })) }),
+          '研究目标由项目章程和安全边界定义，具体研究问题由你根据当前项目、知识库和研究前沿自主选择。默认中文，关注攻击与防护。',
           '本轮只完成一个可交接的知识增量，建议 5–15 次工具操作，15 分钟内结束。不要只写计划或重复旧结论。',
           '把结果写入 knowledge/ 或 research/ 或 reports/，记录源码版本、路径/行号、事实/假设/反证、未知和安全意义。不得修改 sources/、project.json、SCOPE.md、sources.lock.json，不读 evaluation/。',
-          '必须用 orchestrator_research_checkpoint 提交本 round_id、实际变化的 artifacts、源码 evidence，以及按优先级排列的 next 问题（priority 1–5，5 最高）。',
+          '必须用 orchestrator_research_checkpoint 提交本 round_id、实际变化的 artifacts、源码 evidence，以及结构化的 next 研究前沿：问题、理由、假设、证据计划、停止条件、影响、未知和可行性。',
           '检查点成功后立即结束本轮，不要自行循环。若遇到真正前置阻塞，checkpoint outcome=blocked；无新方向时 exhausted。',
           '用户新问题/订正立即优先，通过 orchestrator_report ready + reply_to_trigger_id 回答用户，然后再恢复本轮；不得把本轮研究当作用户问题的答案。',
           '若这是恢复：先检查已有文件与会话，保留已完成工作，补交检查点，不重做。',

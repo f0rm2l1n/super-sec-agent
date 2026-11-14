@@ -25,6 +25,23 @@ ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS = ROOT / '.artifacts'
 CONTROL = ARTIFACTS / 'control'
 KEEP_LOGS = 20
+DSH_HOME = Path(os.environ.get('DSH_SUPERAGENT_HOME') or (Path.home() / '.dsh-superagent'))
+
+
+def ensure_isolated_profile(profile):
+    """Copy a profile into this service's private DSH home without importing sessions or credentials."""
+    target = DSH_HOME / 'profiles' / profile
+    if target.exists():
+        return target
+    source = Path(os.environ.get('DSH_SUPERAGENT_PROFILE_SOURCE') or (Path.home() / '.dsh' / 'profiles' / profile))
+    # Shipped profiles can initialize themselves in the isolated home. A custom profile is
+    # copied when it already exists in the default home; otherwise let dsh report its normal
+    # profile initialization error (and keep the service wrapper testable with a stub dsh).
+    if not source.is_dir():
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, target, symlinks=True)
+    return target
 
 
 def control(profile):
@@ -49,6 +66,11 @@ def serves(args, profile):
             value = True
         elif word == '--profile=' + profile:
             matched = True
+        elif word == profile:
+            # DSH releases in the wild use both `--profile name` and the
+            # positional `dsh name --no-open` form. Accept both so status and
+            # graceful stop cannot lose track of a healthy service.
+            matched = True
         elif not word.startswith('-'):
             words.append(word)
     return matched and 'plugin' not in words
@@ -65,12 +87,17 @@ def ps(*options, check=False):
 
 def running(pid, profile):
     """Return whether `pid` is currently running the DSH service for `profile` (`ps -p` returns nothing once exited)."""
-    return any(found == pid and name in ('node', 'dsh') and serves(args, profile) for found, name, args in ps('-p', str(pid)))
+    return any(found == pid and dsh_process(name, args) and serves(args, profile) for found, name, args in ps('-p', str(pid)))
+
+
+def dsh_process(name, args):
+    """Recognize CLI, Node and macOS DeepSeek Harness process names from `ps`."""
+    return name in ('node', 'dsh') or (name == 'DeepSeek' and args and args[0] == 'Harness')
 
 
 def processes(profile):
     """Return PIDs of all running DSH service processes for `profile`, including instances started outside this script and the recorded `service.pid` while still running."""
-    found = [pid for pid, name, args in ps('-ax', check=True) if name in ('node', 'dsh') and serves(args, profile)]
+    found = [pid for pid, name, args in ps('-ax', check=True) if dsh_process(name, args) and serves(args, profile)]
     try:
         pid = int((control(profile) / 'service.pid').read_text())
     except (OSError, ValueError):
@@ -83,7 +110,10 @@ def state(url):
     request = urllib.request.Request(url.rstrip('/') + '/orchestrator/api/state',
                                      headers={'x-orchestrator-request': '1'})
     try:
-        with urllib.request.urlopen(request, timeout=2) as response:
+        # The management endpoint is loopback-only; never send its health check through
+        # a machine-wide HTTP/SOCKS proxy (which can make a healthy local service look down).
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=2) as response:
             value = json.load(response)
         # Keys omitted by another version read as empty so the service is not mistaken for unreachable.
         health, setup = value.get('health') or {}, value.get('setup') or {}
@@ -165,6 +195,7 @@ def start(args):
         dsh = shutil.which('dsh')
         if not dsh or not shutil.which('tmux'):
             raise RuntimeError('Both dsh and tmux must be on PATH.')
+        ensure_isolated_profile(args.profile)
         exists = subprocess.run(['tmux', 'has-session', '-t', '=' + session],
                                 capture_output=True).returncode == 0
         if state(args.url) is not None:
@@ -174,7 +205,14 @@ def start(args):
         log.touch()
         prune_logs(args.profile)
         # `exec` replaces the shell so the pane PID printed by tmux is the DSH service process itself.
-        command = ('umask 077; exec ' + shlex.join([dsh, '--profile', args.profile, '--no-open'])
+        forwarded = ['DSH_HOME=' + str(DSH_HOME), 'DSH_AGENTS_HOME=' + str(DSH_HOME / 'agents')]
+        # Model credentials and explicit network aliases belong to this isolated
+        # service process; without forwarding them, a restart silently loses the
+        # provider configured through apiKeyEnv.
+        for name in ('DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+                     'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'):
+            if os.environ.get(name): forwarded.append(name + '=' + os.environ[name])
+        command = ('umask 077; exec ' + shlex.join(['env', *forwarded, dsh, '--profile', args.profile, '--no-open'])
                    + ' >> ' + shlex.quote(str(log)) + ' 2>&1')
         # Reuse an existing tmux session without disturbing other windows.
         target = ['new-window', '-t', '=' + session + ':'] if exists else ['new-session', '-s', session]
