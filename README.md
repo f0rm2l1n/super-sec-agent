@@ -28,6 +28,7 @@ BrainAFK Super 的角色是**懂攻也懂防的驻项目安全专家**。它持�
 
 ## 文档
 
+- [部署速查（内部 Agent）](docs/DEPLOYMENT.md)
 - [开发与本地运行](docs/DEVELOPMENT.md)
 - [标准项目安全工作区与迁移](docs/WORKSPACES.md)
 - [产品愿景与驻项目安全专家的工作方式](docs/VISION.md)
