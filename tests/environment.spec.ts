@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -29,7 +29,7 @@ describe('worker shims', () => {
     await expect(exec('gh', ['api', 'user'], { env })).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('not configured') })
     expect(readFileSync(workerGitConfig(dir), 'utf8')).not.toContain('auth git-credential')
     await exec('git', ['init', '--quiet', join(dir, 'repo')], { env })
-    expect((await exec('git', ['-C', join(dir, 'repo'), 'rev-parse', '--show-toplevel'], { env })).stdout.trim()).toBe(join(dir, 'repo'))
+    expect((await exec('git', ['-C', join(dir, 'repo'), 'rev-parse', '--show-toplevel'], { env })).stdout.trim()).toBe(realpathSync(join(dir, 'repo')))
   })
   it('run a wrapper that calls `gh` by name without reaching the shim again, and keep the caller\'s other PATH entries', async () => {
     program(join(dir, 'real', 'gh'), 'echo "{\\"login\\":\\"agent-bot\\",\\"config\\":\\"$GH_CONFIG_DIR\\",\\"path\\":\\"$PATH\\"}"')

@@ -336,6 +336,7 @@ This fork adds project-security profile generation. The remaining modules below 
 | `src/security/cli.ts` | Initialize, lock, check and prepare project workspaces; generate and preview expert configurations |
 | `src/security/continuous-research.ts` | Persist and schedule bounded autonomous rounds, validate changed knowledge and source evidence, wait for human requests and recover checkpoints across restarts |
 | `src/security/local-research.ts` | Bind a local workspace and expert profile, ingest durable questions/corrections and expose replies without GitHub |
+| `src/security/local-inbox.ts` | Consume only UUID-named Markdown files from the explicit local request/correction inboxes, atomically process them, quarantine malformed files and recover interrupted claims |
 | `src/client/research.tsx` | Local research form, message/reply history and persistent worker session links |
 | `src/app/context.ts` | The built-in prompt text, read from `prompts/`, and the transcript entries Sessions read |
 | `src/app/skill-files.ts` | Packaged text: `promptFile`, which joins a file's one-sentence lines into paragraphs, and the bundled skills |

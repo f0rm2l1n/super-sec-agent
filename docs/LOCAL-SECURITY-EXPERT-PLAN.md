@@ -30,9 +30,51 @@ This branch implements a local-network-first security expert while keeping `main
 
 Each milestone must have a focused automated test or a reproducible local command. A passing test proves the execution path and persistence behavior; it does not prove the correctness of a security conclusion. Real-model acceptance remains a separate evaluation with human review.
 
+## Implementation status and step report
+
+The first implementation pass is complete on `security/local-expert` (2026-11-14). The upstream mirror remains unchanged.
+
+| Milestone | Implemented behavior | Verification |
+| --- | --- | --- |
+| 1 | Portable workspace initialization, source pinning, scope and drift checks | `tests/security-workspace.spec.ts` |
+| 2 | Local deployment profile with account probing bypassed and external Sources disabled | `tests/local-research.spec.ts` local startup case |
+| 3 | HTTP and folder intake with UUID idempotency and durable JSON records | `tests/local-research.spec.ts` request and inbox cases |
+| 4 | Durable local worker session, status view and local replies | `tests/local-research.spec.ts` local worker case; `tests/panel-research.spec.tsx` |
+| 5 | Bounded autonomous rounds, evidence checkpoints and restart recovery | continuous-research cases in `tests/local-research.spec.ts` |
+| 6 | Corrections routed into the same project session | correction branch of the local worker case |
+| 7 | Worker questions, human-priority scheduling and independent checkpoint preservation | human-input and recovery cases in `tests/local-research.spec.ts` |
+| 8 | Source revision and scope drift block further research | drift case in `tests/local-research.spec.ts` and workspace tests |
+| 9 | Existing Executor `maxWorkers` supports parallel independent Tickets; local research serializes one project workspace to protect shared evidence | `tests/runtime-concurrency.spec.ts`; separate workspace/inbox directories |
+| 10 | Recovery, status, evidence and loopback/local-network boundaries are covered and documented | security suite, build, and this maintenance guide |
+
+Verification completed during this pass: `typecheck` passed; the security suite passed 20 tests; the production build passed; the serial upstream suite passed 1217 tests, with its only failure being the documentation module index, which was fixed by adding `src/security/local-inbox.ts` to `docs/007-architecture.md`. The suite should be rerun after that documentation-only fix before release.
+
 ## Local operation
 
-The local profile uses a dedicated `stateDir` and workspace. The management panel and loopback API provide interactive control. A later folder adapter may consume `inbox/requests/` and `inbox/corrections/` through stable IDs and atomic claim/complete transitions; files placed elsewhere are never treated as tasks automatically.
+The local profile uses a dedicated `stateDir` and workspace. The management panel and loopback API provide interactive control. The runtime also polls `interactions/inbox/requests/` and `interactions/inbox/corrections/` during its normal pass. Each task is a UTF-8 Markdown file named `<uuid>.md`; it is atomically moved through `processing/` and `processed/`, while malformed files are quarantined under `errors/`. Files placed elsewhere are never treated as tasks automatically.
+
+## Upstream adaptation and upgrade procedure
+
+Keep `main` as a clean mirror of `upstream/main`. Develop the local security layer on `security/local-expert`; do not put local deployment settings, workspace data or credentials in either branch. The current branch deliberately keeps the local code in `src/security/`, the local profile path in `src/deployment.ts`, the local routes in `src/app/http.ts`, and the smallest lifecycle hook in `src/app/runtime.ts`. This makes upstream adoption a reviewable rebase instead of a permanent fork.
+
+Before adopting an upstream release:
+
+```sh
+cd /Users/malin/Desktop/investigate/super-agents/super-sec-agent
+git fetch upstream
+git switch main
+git pull --ff-only upstream main
+git switch security/local-expert
+git rebase main
+NPM_CONFIG_CACHE=/tmp/super-sec-agent-npm-cache npx --yes pnpm@10.15.1 install --frozen-lockfile
+NPM_CONFIG_CACHE=/tmp/super-sec-agent-npm-cache npx --yes pnpm@10.15.1 typecheck
+NPM_CONFIG_CACHE=/tmp/super-sec-agent-npm-cache npx --yes pnpm@10.15.1 test:security
+NPM_CONFIG_CACHE=/tmp/super-sec-agent-npm-cache npx --yes pnpm@10.15.1 build
+```
+
+Resolve conflicts by preserving upstream behavior in `src/core/`, generic source handling and the panel first. Re-apply local behavior only where the local branch owns it: workspace validation, local intake, continuous research, security prompts and the local deployment branch. A conflict in `src/app/runtime.ts`, `src/app/http.ts` or shared client types is an adaptation boundary: resolve it manually, add a focused regression test, and run the complete upstream suite serially when parallel macOS workers make failures ambiguous. Never resolve by blindly choosing one side.
+
+After a rebase, review `git diff --stat main...security/local-expert`, inspect every changed shared file, and verify that `main` is still identical to `upstream/main`. If an upstream feature makes a local hook unnecessary, remove the hook and its tests rather than adding another compatibility layer. The long-term extraction path is a companion package containing `src/security/` plus a small upstream host interface; this branch remains the integration staging area until that boundary is stable.
 
 When the service is exposed beyond localhost, it must sit behind company authentication or an authenticated reverse proxy. The local API header is an origin guard, not a complete network identity boundary.
 

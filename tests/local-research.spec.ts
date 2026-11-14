@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -40,14 +40,14 @@ const message = (text: string, kind: 'question' | 'correction' = 'question') => 
 it('starts without any account CLI and keeps questions, answers and corrections in one local worker', async () => {
   const root = workspace()
   const probe = vi.fn().mockRejectedValue(new Error('no account CLI'))
-  expect(await resolveDeployment(testMachine({ workspace: root }), {}, probe, '')).toMatchObject({ local: { workspace: root } })
+  expect(await resolveDeployment(testMachine({ workspace: root }), {}, probe, '')).toMatchObject({ local: { workspace: realpathSync(root) } })
   expect(probe).not.toHaveBeenCalled()
   host = await startRuntime(undefined, { workspace: root })
   const h = host
   expect(h.runtime.configured()).toBe(true)
   expect(h.subprocess.spawn).not.toHaveBeenCalled()
   expect(existsSync(join(h.directory, 'agent-gh'))).toBe(false)
-  expect((await h.api('GET', 'state')).body).toMatchObject({ setup: { accounts: null, local: { workspace: root } } })
+  expect((await h.api('GET', 'state')).body).toMatchObject({ setup: { accounts: null, local: { workspace: realpathSync(root) } } })
   expect(h.runtime.prompts.current().config.scope).toContain('Locked source collection')
   const first = message('解释访问控制的生效条件。')
   expect(await h.api('POST', 'research/messages', first)).toMatchObject({ status: 200, body: { duplicate: false } })
@@ -75,6 +75,21 @@ it('starts without any account CLI and keeps questions, answers and corrections 
   expect(view.messages[0]!.replies).toContainEqual(expect.objectContaining({ text: '测试回复：条件待真实研究确认。', status: 'sent' }))
   expect(view.sessions[0]?.sessionId).toBe(sessionId)
   expect(h.subprocess.spawn.mock.calls.every(([spec]) => !spec.argv.some(arg => arg.includes('agent-gh') || arg.includes('lark')))).toBe(true)
+})
+
+it('ingests only explicit folder tasks, claims them atomically and quarantines malformed files', async () => {
+  const root = workspace()
+  host = await startRuntime(undefined, { workspace: root })
+  const valid = randomUUID()
+  writeFileSync(join(root, 'interactions/inbox/requests', `${valid}.md`), '请检查身份校验入口与权限边界。\n')
+  writeFileSync(join(root, 'docs', 'not-a-task.md'), '这只是项目资料，不应触发 agent。\n')
+  writeFileSync(join(root, 'interactions/inbox/requests', 'bad-name.md'), '不应被当作任务。\n')
+  await host.runtime.pump(); await host.runtime.idle()
+  expect(host.runtime.research!.view().messages.map(message => message.id)).toContain(`local:${valid}`)
+  expect(existsSync(join(root, 'interactions/inbox/processed/requests', `${valid}.md`))).toBe(true)
+  expect(readdirSync(join(root, 'interactions/inbox/requests')).filter(name => name.endsWith('.md'))).toEqual([])
+  expect(readdirSync(join(root, 'interactions/inbox/errors/requests')).filter(name => name.endsWith('.md'))).toContain('bad-name.md')
+  expect(host.runtime.research!.view().inbox).toEqual({ pending: 0, errors: 1 })
 })
 
 it('restores the local identity and request history and refuses source/scope drift', async () => {

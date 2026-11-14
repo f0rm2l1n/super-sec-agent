@@ -10,6 +10,7 @@ import { record } from '../kv.ts'
 import { SettingsSchema } from '../policy.ts'
 import type { SourceKind } from '../sources/kind.ts'
 import { checkWorkspace, createWorkspaceProfile } from './workspace.ts'
+import { LocalInbox } from './local-inbox.ts'
 
 const bindingKey = record<{ workspace: string; id: string; profile: PromptConfig }>('local-research-binding')
 export const LocalMessageSchema = z.object({
@@ -41,6 +42,7 @@ interface LocalHost {
 /** Local intake reuses Engine, durable Outbox and the persistent DSH worker session. */
 export class LocalResearch {
   readonly continuous: ContinuousResearch
+  readonly inbox: LocalInbox
   private readonly workspace: ReturnType<typeof createWorkspaceProfile>
   constructor(directory: string, private readonly host: LocalHost) {
     this.workspace = createWorkspaceProfile(directory)
@@ -61,6 +63,7 @@ export class LocalResearch {
       host.prompts.save(profile, current.revision, 'tool')
     }
     host.store.set(bindingKey, { workspace: root, id: config.id, profile })
+    this.inbox = new LocalInbox(root, message => this.send(message))
     const settings = host.store.settings()
     // A local deployment never polls or publishes to an external Source. Local
     // authorization belongs to the same-origin operator endpoint, not to gh.
@@ -124,6 +127,9 @@ export class LocalResearch {
     return { id, duplicate: received === 'duplicate' }
   }
 
+  /** Poll the explicit workspace inbox. The runtime calls this during its regular local pass. */
+  pollInbox() { return this.inbox.poll() }
+
   private ticket() {
     return this.host.store.tickets.open().find(ticket =>
       this.host.store.triggers.get(ticket.origin.triggerId)?.source === 'local')
@@ -149,7 +155,7 @@ export class LocalResearch {
     ).all().map(row => JSON.parse(String(row.value)) as Receipt).reverse()
     const tickets = this.host.store.tickets.open().filter(ticket =>
       this.host.store.triggers.get(ticket.origin.triggerId)?.source === 'local')
-    return { id: config.id, name: config.name, workspace: root, continuous: this.continuous.view(),
+    return { id: config.id, name: config.name, workspace: root, continuous: this.continuous.view(), inbox: this.inbox.view(),
       sources: lock.sources.map(({ id, revision, role }) => ({ id, revision, role })),
       messages: requests.map(request => ({ id: request.id, text: request.text, at: request.at,
         kind: String(request.meta.kind),

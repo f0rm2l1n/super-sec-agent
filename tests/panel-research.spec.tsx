@@ -10,14 +10,14 @@ it('keeps a failed question editable, retries with the same ID, and opens the re
   server.setup = { ...server.setup, accounts: null, local }
   server.research = { ...local, sources: [{ id: 'main', revision: 'a'.repeat(40), role: 'subject' }],
     continuous: { enabled: false, status: 'paused', active: null, error: undefined, rounds: [], totalRounds: 0, candidates: [], nextAt: new Date(0).toISOString() },
-    messages: [], sessions: [{ ticketId: 'local-ticket', sessionId: 'worker-local-ticket', title: 'Sample security' }] }
+    inbox: { pending: 0, errors: 0 }, messages: [], sessions: [{ ticketId: 'local-ticket', sessionId: 'worker-local-ticket', title: 'Sample security' }] }
   await mount()
   expect(text()).toContain(zh['research.title'])
   await click(zh['research.start'])
-  expect(server.research.continuous.enabled).toBe(true)
+  expect(server.research!.continuous.enabled).toBe(true)
   expect(text()).toContain(zh['research.loop.waiting'])
   await click(zh['research.pause'])
-  expect(server.research.continuous.enabled).toBe(false)
+  expect(server.research!.continuous.enabled).toBe(false)
   const editor = document.querySelector<HTMLTextAreaElement>('textarea')!
   await type(editor, '认证在哪一层生效？')
   server.researchError = '模型暂不可用，请重试'
