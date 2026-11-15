@@ -227,14 +227,39 @@ it('refreshes the research frontier after exhaustion and keeps real blockers sto
   expect(h.runtime.research!.continuous.view()).toMatchObject({ status: 'blocked', error: '当前研究前沿已耗尽，需要新的项目证据或人工授权。' })
 })
 
-it('keeps an explicit research prerequisite blocker waiting for a person', async () => {
+it('keeps an explicit research prerequisite visible while leaving other frontier work eligible', async () => {
   const root = workspace(), { h, sessionId } = await continuousWorker(root)
+  const next = { question: '继续检查另一个独立的授权边界。', rationale: '该边界不依赖当前等待授权的动态实验。',
+    hypothesis: '另一个入口可能存在独立的权限差异。', evidencePlan: '检查入口和调用方的源码证据。',
+    stopCondition: '确认边界并记录证据或反证。', impact: 4, uncertainty: 3, feasibility: 4, status: 'open' as const, provenance: 'agent' as const }
   await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
-    round_id: h.runtime.research!.continuous.view().active!.id, summary: '动态验证需要操作者授权。', outcome: 'blocked', artifacts: [], evidence: [], next: [],
+    round_id: h.runtime.research!.continuous.view().active!.id, summary: '动态验证需要操作者授权。', outcome: 'blocked', artifacts: [], evidence: [], next: [next],
     blocker: '需要操作者授权隔离环境中的动态连接跟踪。',
   })
-  expect(h.runtime.research!.continuous.view()).toMatchObject({ status: 'blocked', error: '需要操作者授权隔离环境中的动态连接跟踪。' })
-})
+  const view = h.runtime.research!.continuous.view()
+  expect(view).toMatchObject({ status: 'waiting', error: undefined })
+  expect(view).toMatchObject({ attention: { question: '需要操作者授权隔离环境中的动态连接跟踪。' } })
+  const candidate = view.candidates.find(item => item.status === 'blocked')
+  expect(candidate).toMatchObject({ status: 'blocked', blocker: '需要操作者授权隔离环境中的动态连接跟踪。' })
+  expect(view.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ question: next.question, status: 'open' })]))
+  await idleWorker(h, sessionId)
+  const now = Date.now()
+  vi.spyOn(Date, 'now').mockReturnValue(now + 11_000)
+  h.runtime.research!.continuous.tick()
+  expect(h.runtime.research!.continuous.view().active?.question).toBe(next.question)
+  vi.spyOn(Date, 'now').mockReturnValue(now + 22_000)
+  h.runtime.research!.continuous.tick()
+  expect(h.runtime.research!.continuous.view().error).toBeUndefined()
+
+  const third = { ...next, question: '继续检查第三个独立的信任边界。' }
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
+    round_id: h.runtime.research!.continuous.view().active!.id, summary: '继续检查另一个独立边界。', outcome: 'exhausted', artifacts: [], evidence: [], next: [third],
+  })
+  expect(h.runtime.research!.continuous.view().candidates).toEqual(expect.arrayContaining([
+    expect.objectContaining({ status: 'blocked', blocker: '需要操作者授权隔离环境中的动态连接跟踪。' }),
+    expect.objectContaining({ question: third.question, status: 'open' }),
+  ]))
+}, 15_000)
 
 it('drops a completed question when an agent returns it as a next candidate', async () => {
   const root = workspace(), { h, sessionId } = await continuousWorker(root)
