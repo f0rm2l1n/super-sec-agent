@@ -50,4 +50,4 @@ services:
       - ${SUPERAGENT_DATA_DIR:-./.container-data}/secrets:/var/lib/superagent/secrets
       # This path is used only when SUPERAGENT_DSH_PATCH_FILE points to
       # /run/superagent/dsh.patch.yml inside the container.
-      - ${SUPERAGENT_DSH_PATCH_HOST_FILE:-./.container-data/dsh.patch.yml}:/run/superagent/dsh.patch.yml:ro
+      - ${SUPERAGENT_DSH_PATCH_HOST_FILE:-/dev/null}:/run/superagent/dsh.patch.yml:ro
