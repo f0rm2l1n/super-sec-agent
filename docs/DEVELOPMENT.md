@@ -192,7 +192,7 @@ docker compose --env-file /srv/superagent-sec/runtime.env -f deploy/compose.yaml
 docker compose --env-file /srv/superagent-sec/runtime.env -f deploy/compose.yaml logs -f
 ```
 
-运行时镜像包含 Node、pnpm、DSH、锁定依赖和 `openssh-client`，但不包含应用源码。Compose 从当前 checkout 构建应用镜像，构建时生成 `lib/`；运行中的容器只挂载目标项目和运行状态，不挂载源码、`node_modules` 或 `lib`。因此内网主机不需要安装 Node 依赖，也不会修改 checkout。普通源码更新只需在 host 上 `git pull`，再执行 `docker compose build && docker compose up -d`；若 `package.json` 或 lockfile 改变，则先重建并重新导出运行时镜像。
+运行时镜像包含 Node、pnpm、DSH、锁定依赖、`openssh-client`，以及 agent 常用的 `bash`、`python3`、`ripgrep`、`jq`、`curl`、`file`、`binutils`、`sqlite3`、`unzip`、`xxd` 和 `procps`，但不包含应用源码。Compose 从当前 checkout 构建应用镜像，构建时生成 `lib/`；运行中的容器只挂载目标项目和运行状态，不挂载源码、`node_modules` 或 `lib`。因此内网主机不需要安装 Node 依赖，也不会修改 checkout。普通源码更新只需在 host 上 `git pull`，再执行 `docker compose build && docker compose up -d`；若 `package.json` 或 lockfile 改变，则先重建并重新导出运行时镜像。需要目标专属编译器、SDK 或 Python 包时，通过 SSH 进入目标 runtime 或使用项目自己的构建容器。
 
 端口和挂载约定如下：
 

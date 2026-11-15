@@ -24,5 +24,8 @@ docker run --rm --platform "$PLATFORM" --entrypoint sh "$APP_IMAGE" -eu -c '
   test -f /opt/superagent-sec/lib/index.js
   test ! -e /workspace/superagent-source
   test ! -e /workspace/super-sec-agent
+  for tool in bash git ssh rg python3 jq curl file strings readelf eu-readelf sqlite3 unzip zip xz zstd strace ltrace; do
+    command -v "$tool" >/dev/null
+  done
 '
 printf '%s\n' "Container smoke passed: runtime dependencies were reused and the checkout built into $APP_IMAGE."

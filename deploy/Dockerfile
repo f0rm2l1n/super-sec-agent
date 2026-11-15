@@ -8,7 +8,9 @@ ENV PNPM_HOME=/pnpm
 ENV PATH=${PNPM_HOME}:${PATH}
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates git openssh-client \
+  && apt-get install -y --no-install-recommends \
+    bash binutils ca-certificates curl elfutils file git jq less ltrace openssh-client procps \
+    python3 python3-venv ripgrep sqlite3 strace unzip wget xxd zip xz-utils zstd \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npm install --global pnpm@10.15.1 @deepseek-ai/dsh@${DSH_VERSION}

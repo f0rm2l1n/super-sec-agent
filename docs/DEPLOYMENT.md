@@ -31,8 +31,8 @@ export DEEPSEEK_API_KEY='从 secret 注入，不写入文件'
 发布的镜像只承担依赖和运行时的稳定层，不包含 Superagent-sec 的应用源码或 `lib/` 构建产物。Compose 使用当前 checkout 构建一个本地应用镜像，应用源码和 `lib/` 都在这个镜像层中；目标项目工作区和运行状态仍由 host 提供。这样代码更新只需重新构建应用层，依赖变化才需要新的运行时 Release。镜像按 CPU 架构发布，不能把 arm64 镜像直接搬到 amd64 主机（反之亦然）。在可联网机器上执行下面的导出脚本：
 
 ```sh
-./scripts/export-docker-release.sh v0.1.0-sec.5
-ls -lh .artifacts/releases/v0.1.0-sec.5/
+./scripts/export-docker-release.sh v0.1.0-sec.6
+ls -lh .artifacts/releases/v0.1.0-sec.6/
 ```
 
 脚本会根据 Dockerfile 的锁定依赖层导出对应架构的 Docker archive，并为每个 archive 生成 `.sha256` 和构建元数据。当前内网使用 `SUPERAGENT_RELEASE_PLATFORMS=linux/amd64`。发布前应确认 checkout 干净，并把 commit SHA 记录在 Release 说明中。
@@ -49,11 +49,11 @@ SUPERAGENT_APP_IMAGE=superagent-sec-app:smoke \
 
 ```sh
 git push origin feature/superagent-sec-deployment
-git tag v0.1.0-sec.5
-git push origin v0.1.0-sec.5
-gh release create v0.1.0-sec.5 .artifacts/releases/v0.1.0-sec.5/* \
-  --prerelease --title 'superagent-sec v0.1.0-sec.5' \
-  --notes-file docs/RELEASE-v0.1.0-sec.5.md
+git tag v0.1.0-sec.6
+git push origin v0.1.0-sec.6
+gh release create v0.1.0-sec.6 .artifacts/releases/v0.1.0-sec.6/* \
+  --prerelease --title 'superagent-sec v0.1.0-sec.6' \
+  --notes-file docs/RELEASE-v0.1.0-sec.6.md
 ```
 
 如果联网机器没有 `gh`，可在 GitHub 网页的该 tag Release 页面上传同一目录中的 `.tar.gz`、`.sha256` 和 `.json` 文件。不要把 API key、web token 或 `deploy/.env` 上传为 Release asset。
@@ -64,7 +64,7 @@ gh release create v0.1.0-sec.5 .artifacts/releases/v0.1.0-sec.5/* \
 export SUPERAGENT_PROJECTS_DIR=/srv/superagent-sec/projects
 export SUPERAGENT_PROJECT_ID=tinyproxy
 export SUPERAGENT_DATA_DIR=/srv/superagent-sec/runtime/tinyproxy
-docker load < superagent-sec-runtime-v0.1.0-sec.5-linux-amd64.tar.gz
+docker load < superagent-sec-runtime-v0.1.0-sec.6-linux-amd64.tar.gz
 docker compose --env-file deploy/.env -f deploy/compose.yaml build
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d
 docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f
@@ -73,16 +73,16 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f
 从 Release 下载后先校验并导入对应架构：
 
 ```sh
-sha256sum -c superagent-sec-runtime-v0.1.0-sec.5-linux-amd64.tar.gz.sha256
-docker load < superagent-sec-runtime-v0.1.0-sec.5-linux-amd64.tar.gz
-sed -i 's#^SUPERAGENT_RUNTIME_IMAGE=.*#SUPERAGENT_RUNTIME_IMAGE=superagent-sec-runtime:v0.1.0-sec.5-linux-amd64#' deploy/.env
+sha256sum -c superagent-sec-runtime-v0.1.0-sec.6-linux-amd64.tar.gz.sha256
+docker load < superagent-sec-runtime-v0.1.0-sec.6-linux-amd64.tar.gz
+sed -i 's#^SUPERAGENT_RUNTIME_IMAGE=.*#SUPERAGENT_RUNTIME_IMAGE=superagent-sec-runtime:v0.1.0-sec.6-linux-amd64#' deploy/.env
 docker compose --env-file deploy/.env -f deploy/compose.yaml build
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d
 ```
 
 升级时先下载并校验新 archive，再执行 `docker load`、`docker compose build` 和 `docker compose up -d`；回滚只需把 `SUPERAGENT_RUNTIME_IMAGE` 改回旧版本并重新构建应用层。源码 checkout 更新后执行 `git pull`、`docker compose build` 和 `docker compose up -d`。只有 `package.json`、`pnpm-lock.yaml`、Dockerfile 或依赖层改变时才构建新的 Release runtime image。
 
-运行时镜像提供 Node、pnpm、DSH、锁定依赖、构建工具和 OpenSSH client；应用镜像由 Compose 从当前 checkout 构建，包含源码和生成的 `lib/`。容器启动时不向 checkout、`node_modules` 或 `lib/` 写入任何内容，也不依赖 host 上的 Node 依赖。
+运行时镜像提供 Node、pnpm、DSH、锁定依赖、OpenSSH client，以及 agent 常用的 `bash`、`python3`、`ripgrep`、`jq`、`curl`、`file`、`binutils`、`sqlite3`、`unzip`、`xxd`、`procps` 等分析工具；它不包含目标项目源码。应用镜像由 Compose 从当前 checkout 构建，包含 Superagent-sec 源码和生成的 `lib/`。容器启动时不向 checkout、`node_modules` 或 `lib` 写入任何内容，也不依赖 host 上的 Node 依赖。需要编译大型目标项目或安装项目专属依赖时，连接目标 runtime 或使用项目自己的构建容器，不把编译器和任意 pip 包塞进稳定 runtime 镜像。
 
 ## 挂载和 SSH
 
