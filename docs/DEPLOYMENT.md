@@ -37,6 +37,12 @@ ls -lh .artifacts/releases/v0.1.0-sec.4/
 
 脚本会根据 Dockerfile 的锁定依赖层导出对应架构的 Docker archive，并为每个 archive 生成 `.sha256` 和构建元数据。当前内网使用 `SUPERAGENT_RELEASE_PLATFORMS=linux/amd64`。发布前应确认 checkout 干净，并把 commit SHA 记录在 Release 说明中。
 
+导出前先运行本地容器 smoke check，验证只读 host checkout、依赖 volume、`lib/` volume 和 host 代码构建路径：
+
+```sh
+./scripts/container-smoke.sh v0.1.0-sec.4-linux-amd64
+```
+
 上传到 GitHub Release（联网机器需已安装并登录 `gh`）：
 
 ```sh
