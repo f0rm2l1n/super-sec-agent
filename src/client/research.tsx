@@ -90,6 +90,11 @@ export function LocalResearchPanel() {
               ? data.continuous.error ? 'research.resume' : 'research.start' : 'research.pause')}
           </Button>
         </div>
+        {data.continuous.attention && data.continuous.attention.question !== data.attention?.question && <div className="dt-research-attention" role="alert">
+          <p className="dt-research-card-caption">{t('research.attention')}</p>
+          <MarkdownLite text={data.continuous.attention.question} />
+          <Hint>{t('research.attentionHelp')}</Hint>
+        </div>}
         {data.attention && <div className="dt-research-attention" role="alert">
           <p className="dt-research-card-caption">{t('research.attention')}</p>
           <MarkdownLite text={data.attention.question} />

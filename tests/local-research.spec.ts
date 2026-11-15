@@ -152,6 +152,16 @@ async function continuousWorker(root: string, options: { stateDir?: string; keep
   expect(note?.text).not.toContain('结合已有研究，自主选择一个最值得弄清的项目安全机制')
   return { h, ticket, sessionId }
 }
+
+it('surfaces a research worker toolchain request on the Superagent-sec page', async () => {
+  const root = workspace(), { h, sessionId } = await continuousWorker(root)
+  const question = '请提供 llvm-objdump 17 或挂载包含它的临时分析 runtime。'
+  await h.runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: '现有工具无法解析目标格式，已记录替代尝试。', human_action: question })
+  const view = h.runtime.research!.view()
+  expect(view.attention).toMatchObject({ question })
+  expect(view.continuous.attention).toMatchObject({ question })
+})
+
 function checkpoint(h: Host, root: string) {
   writeFileSync(join(root, 'knowledge/mechanisms/identity.md'), 'Confirmed: auth.c is the pinned entry. Missing implementation remains an explicit unknown.\n')
   return {

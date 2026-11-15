@@ -194,11 +194,13 @@ export class ContinuousResearch {
     const human = !!ticket && this.pending(ticket)
     const activeRounds = state.workers.filter(worker => worker.active)
     const active = primary?.active
+    const attention = state.workers.map(worker => this.host.store.tickets.get(worker.ticketId)?.attention).find(Boolean)
     return { enabled: state.enabled,
       status: !state.enabled ? 'paused' : state.error ? 'blocked' : this.host.store.settings().paused ? 'system-paused' : human ? 'user-priority' : activeRounds.length ? 'researching' : 'waiting',
       error: state.error, active: active ? { id: active.id, question: active.question, rationale: active.rationale,
         hypothesis: active.hypothesis, evidencePlan: active.evidencePlan, stopCondition: active.stopCondition,
         startedAt: active.startedAt, deadline: active.deadline } : null,
+      attention: attention ? { question: attention.question, triggerId: attention.triggerId } : null,
       workers: state.workers.map(worker => ({ ticketId: worker.ticketId, active: worker.active ? { id: worker.active.id, question: worker.active.question, startedAt: worker.active.startedAt, deadline: worker.active.deadline } : null, nextAt: worker.nextAt, error: worker.error })),
       activeRounds: activeRounds.map(worker => ({ ticketId: worker.ticketId, id: worker.active!.id, question: worker.active!.question })),
       nextAt: state.nextAt, rounds: state.completed.slice(-30), totalRounds: state.completed.length, candidates: state.candidates,
