@@ -4,12 +4,12 @@ import {
   builtInBase, builtInPart, defaultPrompts, PromptConfigSchema,
   type PartKey, type PromptConfig,
 } from '../app/prompts.ts'
-import { ProjectContextSchema, type ProjectContext } from './project.ts'
+import { ProjectContextSchema, type ProjectContextInput } from './project.ts'
 
 const text = (name: string) => readFileSync(packagePath('prompts', 'security', `${name}.md`), 'utf8').trim()
 
 /** Generate the upstream-supported prompt configuration; runtime policy remains unchanged. */
-export function createSecurityProfile(input: ProjectContext): PromptConfig {
+export function createSecurityProfile(input: ProjectContextInput): PromptConfig {
   const project = ProjectContextSchema.parse(input)
   const override = (part: PartKey, content: string) => {
     const original = builtInPart(part)

@@ -74,7 +74,7 @@
 
 `role` 为 `subject`、`dependency` 或 `reference`；`primarySource` 是当前上游单仓库执行接口的主锚点，不限制专家只研究这个仓库。所有 source 都注入同一份正式 profile，避免依赖验收脚本临时补充多仓库上下文。
 
-`kind` 可以是 `git` 或 `directory`，默认省略时按 `git` 处理。Git source 需要 `url` 和 `ref`，锁文件记录 commit SHA；directory source 只需要 `path`、`role` 和 `purpose`，锁文件记录目录内容的 SHA256 基线。目录可以是配置、构建产物或包含多个仓库的外部资料集合；如果需要分别引用其中的仓库，也可以把它们分别登记为多个 source。研究页面会同时显示来源类型、相对路径和基线。
+`kind` 可以是 `git`、`directory`、`binary` 或 `pseudocode`，默认省略时按 `git` 处理。Git source 需要 `url` 和 `ref`，锁文件记录 commit SHA；其他 source 只需要 `path`、`role` 和 `purpose`，锁文件记录内容 SHA256 基线。`directory` 表示未版本化的源码、配置或资料集合；`binary` 表示可执行文件、库或二进制包（可以是单文件或目录）；`pseudocode` 表示反编译、反汇编或提取的伪代码资料。它们都属于项目证据输入，不假设一定有 Git 历史，也不把伪代码当作源码事实。研究页面会同时显示来源类型、相对路径和基线。
 
 `sources.lock.json` 记录每个 source 的确定 SHA、登记信息、浅克隆状态及稀疏检出范围。Git 的 `ref` 表示关注目标，目录 source 没有 ref；SHA 表示此次研究基线。当前没有自动监听分支。锁定多个仓库或目录也不等于证明它们来自某款产品的完整构建，产品配置和版本兼容性证据需另行收集。
 

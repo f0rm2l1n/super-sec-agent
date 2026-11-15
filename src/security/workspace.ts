@@ -12,9 +12,10 @@ const revision = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
 const sourcePath = z.string().refine(value => value.startsWith('sources/')
   && !value.includes('\\') && value.split('/').every(part => part !== '' && part !== '.' && part !== '..'),
 'Expected a workspace-relative path under sources/')
+const sourceKind = z.enum(['git', 'directory', 'binary', 'pseudocode'])
 
 const SourceSchema = z.object({
-  id, path: sourcePath, kind: z.enum(['git', 'directory']).default('git'),
+  id, path: sourcePath, kind: sourceKind.default('git'),
   url: z.string().min(1).optional(), ref: z.string().min(1).optional(),
   role: z.enum(['subject', 'dependency', 'reference']), purpose: z.string().min(1),
 }).strict().superRefine((source, context) => {
@@ -57,8 +58,9 @@ function git(path: string, ...args: string[]) {
   }).trim()
 }
 
-function directoryRevision(path: string) {
+function contentRevision(path: string) {
   const hash = createHash('sha256')
+  if (statSync(path).isFile()) return hash.update('file\0').update(readFileSync(path)).digest('hex')
   const walk = (directory: string, prefix: string) => {
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       if (entry.name === '.git') continue
@@ -121,9 +123,9 @@ function inspectSources(workspace: ReturnType<typeof readWorkspace>, pinned?: z.
   }
   return config.sources.map(source => {
     const path = inside(inside(root, 'sources'), source.path.slice('sources/'.length))
-    if (source.kind === 'directory') {
-      if (!statSync(path).isDirectory()) throw new Error(`Expected a directory source: ${source.id}`)
-      const currentRevision = directoryRevision(path)
+    if (source.kind !== 'git') {
+      if (source.kind === 'directory' && !statSync(path).isDirectory()) throw new Error(`Expected a directory source: ${source.id}`)
+      const currentRevision = contentRevision(path)
       const locked = pinned?.sources.find(item => item.id === source.id)
       const registrationKeys = ['kind', 'path', 'role', 'purpose'] as const
       if (pinned && (!locked || registrationKeys.some(key => source[key] !== locked[key]))) {
@@ -186,8 +188,8 @@ export function createWorkspaceProfile(directory: string) {
   const source = lock.sources.find(item => item.id === config.primarySource)!
   const sourcePath = inside(root, source.path)
   const profile = createSecurityProfile(source.kind === 'git'
-    ? resolveProjectContext({ project: sourcePath, ref: source.revision, topic: config.topic, knowledgeDirectory: inside(root, 'knowledge') })
-    : { repositoryPath: sourcePath, revision: source.revision, topic: config.topic, knowledgeDirectory: inside(root, 'knowledge') })
+    ? resolveProjectContext({ project: sourcePath, ref: source.revision, topic: config.topic, knowledgeDirectory: inside(root, 'knowledge'), targetKind: source.kind })
+    : { repositoryPath: sourcePath, revision: source.revision, topic: config.topic, knowledgeDirectory: inside(root, 'knowledge'), targetKind: source.kind })
   profile.scope += [
     '\n\nProject security workspace: ' + root,
     'The primary source is an execution anchor. Study all relevant registered sources, including framework and dependencies.',

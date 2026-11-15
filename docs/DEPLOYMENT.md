@@ -28,24 +28,24 @@ export DEEPSEEK_API_KEY='从 secret 注入，不写入文件'
 
 ## 受限内网镜像
 
-镜像是依赖和运行时的稳定层；项目 checkout、研究工作区和运行状态仍由 host 提供。镜像按 CPU 架构发布，不能把 arm64 镜像直接搬到 amd64 主机（反之亦然）。在可联网机器上执行下面的导出脚本：
+镜像只承担依赖和运行时的稳定层，不包含 Superagent-sec 的应用源码或 `lib/` 构建产物；项目 checkout、研究工作区和运行状态仍由 host 提供。Compose 启动时用 host checkout 构建当前 `lib/`，因此普通代码更新不需要重建镜像。镜像按 CPU 架构发布，不能把 arm64 镜像直接搬到 amd64 主机（反之亦然）。在可联网机器上执行下面的导出脚本：
 
 ```sh
-./scripts/export-docker-release.sh v0.1.0-sec.1
-ls -lh .artifacts/releases/v0.1.0-sec.1/
+./scripts/export-docker-release.sh v0.1.0-sec.2
+ls -lh .artifacts/releases/v0.1.0-sec.2/
 ```
 
-脚本会构建当前 checkout、导出 `linux/amd64` 和 `linux/arm64` 两个 Docker archive，并为每个 archive 生成 `.sha256` 和构建元数据。若只需要当前主机架构，可设置 `SUPERAGENT_RELEASE_PLATFORMS=linux/arm64`（amd64 主机相应设置为 `linux/amd64`）。发布前应确认 checkout 干净，并把 commit SHA 记录在 Release 说明中。
+脚本会根据 Dockerfile 的锁定依赖层导出对应架构的 Docker archive，并为每个 archive 生成 `.sha256` 和构建元数据。当前内网使用 `SUPERAGENT_RELEASE_PLATFORMS=linux/amd64`。发布前应确认 checkout 干净，并把 commit SHA 记录在 Release 说明中。
 
 上传到 GitHub Release（联网机器需已安装并登录 `gh`）：
 
 ```sh
 git push origin feature/superagent-sec-deployment
-git tag v0.1.0-sec.1
-git push origin v0.1.0-sec.1
-gh release create v0.1.0-sec.1 .artifacts/releases/v0.1.0-sec.1/* \
-  --prerelease --title 'superagent-sec v0.1.0-sec.1' \
-  --notes-file docs/RELEASE-v0.1.0-sec.1.md
+git tag v0.1.0-sec.2
+git push origin v0.1.0-sec.2
+gh release create v0.1.0-sec.2 .artifacts/releases/v0.1.0-sec.2/* \
+  --prerelease --title 'superagent-sec v0.1.0-sec.2' \
+  --notes-file docs/RELEASE-v0.1.0-sec.2.md
 ```
 
 如果联网机器没有 `gh`，可在 GitHub 网页的该 tag Release 页面上传同一目录中的 `.tar.gz`、`.sha256` 和 `.json` 文件。不要把 API key、web token 或 `deploy/.env` 上传为 Release asset。
@@ -66,19 +66,19 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f
 从 Release 下载后先校验并导入对应架构：
 
 ```sh
-sha256sum -c superagent-sec-v0.1.0-sec.1-linux-amd64.tar.gz.sha256
-docker load < superagent-sec-v0.1.0-sec.1-linux-amd64.tar.gz
-sed -i 's/^SUPERAGENT_IMAGE_TAG=.*/SUPERAGENT_IMAGE_TAG=v0.1.0-sec.1-linux-amd64/' deploy/.env
+sha256sum -c superagent-sec-v0.1.0-sec.2-linux-amd64.tar.gz.sha256
+docker load < superagent-sec-v0.1.0-sec.2-linux-amd64.tar.gz
+sed -i 's/^SUPERAGENT_IMAGE_TAG=.*/SUPERAGENT_IMAGE_TAG=v0.1.0-sec.2-linux-amd64/' deploy/.env
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --no-build
 ```
 
 升级时先下载并校验新 archive，再执行 `docker load` 和 `docker compose up -d --no-build`；回滚只需把 `SUPERAGENT_IMAGE_TAG` 改回旧版本。源码 checkout 更新不需要重建镜像；只有 `package.json`、`pnpm-lock.yaml`、Dockerfile 或依赖层改变时才构建新的 Release image。
 
-镜像提供 Node、pnpm、DSH、依赖、构建工具和 OpenSSH client；源码以只读方式挂载，`node_modules` 与 `lib` 使用独立 volume。源码更新后在 host 执行 `git pull`，再 `docker compose restart`；锁文件或 `package.json` 改动时重新构建镜像。
+镜像提供 Node、pnpm、DSH、锁定依赖、构建工具和 OpenSSH client；应用 checkout 以只读方式挂载，`node_modules` 与生成的 `lib` 使用独立 volume。源码更新后在 host 执行 `git pull`，再 `docker compose restart`；只有锁文件、`package.json`、Dockerfile 或依赖层改动时才重新构建镜像。
 
 ## 挂载和 SSH
 
-每个项目可以包含多个 repo、普通目录、`workspace/`、`knowledge/`、`reports/`、`runtime/` 和其他资料；不要假设一个项目只有一个 Git。`SUPERAGENT_DATA_DIR` 保存 SQLite、隔离 DSH Session、token 和 SSH key。
+每个项目可以包含多个 repo、普通目录、二进制/库文件、反编译伪代码、`workspace/`、`knowledge/`、`reports/`、`runtime/` 和其他资料；不要假设一个项目只有一个 Git，也不要把所有研究输入都称为源码。`sources/` 是受锁定基线管理的项目证据入口，`runtime/artifacts/` 保存构建、镜像和运行产物，`knowledge/` 与 `reports/` 保存研究输出。`SUPERAGENT_DATA_DIR` 保存 SQLite、隔离 DSH Session、token 和 SSH key。
 
 首次容器启动会在 `secrets/ssh/id_ed25519` 自动生成持久 ED25519 key，并打印指纹。把 `id_ed25519.pub` 加到目标 runtime 的 `authorized_keys`；容器只发起 SSH，不运行 SSH server，也不映射宿主机 22 端口。
 

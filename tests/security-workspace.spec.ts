@@ -82,6 +82,29 @@ it('supports a directory source with a content baseline', () => {
   expect(() => checkWorkspace(root)).toThrow(/baseline changed/)
 })
 
+it('tracks binary files and pseudocode directories as typed evidence baselines', () => {
+  const root = setup()
+  const binary = join(root, 'sources', 'target.bin')
+  const pseudocode = join(root, 'sources', 'decompiled')
+  writeFileSync(binary, Buffer.from([0, 1, 2, 3, 4]))
+  mkdirSync(pseudocode, { recursive: true })
+  writeFileSync(join(pseudocode, 'main.c'), '/* extracted pseudocode */\n')
+  const config = JSON.parse(readFileSync(join(root, 'project.json'), 'utf8'))
+  config.primarySource = 'target-bin'
+  config.sources = [
+    { id: 'target-bin', kind: 'binary', path: 'sources/target.bin', role: 'subject', purpose: '待分析的二进制文件' },
+    { id: 'decompiled', kind: 'pseudocode', path: 'sources/decompiled', role: 'reference', purpose: '反编译伪代码' },
+  ]
+  writeFileSync(join(root, 'project.json'), JSON.stringify(config, null, 2))
+  lockWorkspace(root)
+  const checked = checkWorkspace(root)
+  expect(checked.lock.sources.map(source => source.kind)).toEqual(['binary', 'pseudocode'])
+  expect(checked.lock.sources.every(source => source.revision.length === 64)).toBe(true)
+  expect(createWorkspaceProfile(root).profile.scope).toContain('"targetKind": "binary"')
+  writeFileSync(binary, Buffer.from([9, 8, 7]))
+  expect(() => checkWorkspace(root)).toThrow(/baseline changed/)
+})
+
 it('relocates sources, knowledge and corrections without editing portable metadata', () => {
   const root = setup()
   lockWorkspace(root)

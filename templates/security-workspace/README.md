@@ -6,7 +6,7 @@
 project.json              项目身份、范围摘要、源码登记和关注 ref
 sources.lock.json         本轮研究的确定 SHA 和源码可用性限制
 SCOPE.md                  长期职责、重点安全问题、产品与部署前提
-sources/<source-id>/      主体、依赖或对标项目的独立 Git checkout
+sources/<source-id>/      Git checkout、普通目录、二进制文件/目录或反编译伪代码资料
 docs/                     项目文档、协议、设计、部署与外部资料
 vulnerabilities/          历史漏洞、根因、修复与同类问题研究
 exploits/                 历史利用链、利用条件、PoC 材料与分析
@@ -38,4 +38,4 @@ pnpm expert prepare --workspace <workspace>
 
 先填写配置与范围并准备源码，再执行 `lock`。该操作将已 checkout 的指定 ref 解析为 SHA，写入锁文件，不会获取远端代码或切换版本。`check` 和 `prepare` 使用锁定 SHA，发现源码漂移或未提交改动会报错。改变研究版本后应明确更新锁文件并复查旧知识，不覆盖旧知识的适用版本。
 
-配置与知识引用使用相对路径及 source ID。迁移时复制整个工作区，包括各源码仓库的 `.git`，然后重新执行 `check` 和 `prepare`。不要依赖工作区外的 worktree Git 元数据或目录链接；运行记录中的历史绝对路径可以保留为历史信息，`.agent/` 的绝对路径必须重新生成。目标的 runtime/ 资料需要保留，并按新环境复核。模型密钥使用宿主环境配置，不写入工作区模板。
+配置与知识引用使用相对路径及 source ID。迁移时复制整个工作区，包括各源码仓库的 `.git`、二进制和伪代码资料，然后重新执行 `check` 和 `prepare`。不要依赖工作区外的 worktree Git 元数据或目录链接；运行记录中的历史绝对路径可以保留为历史信息，`.agent/` 的绝对路径必须重新生成。目标的 runtime/ 资料需要保留，并按新环境复核。模型密钥使用宿主环境配置，不写入工作区模板。

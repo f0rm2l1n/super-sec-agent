@@ -35,6 +35,8 @@ const TEXT = {
   'research.sources': ['研究目标来源与基线', 'Research targets and baselines'],
   'research.sourceGit': ['Git 仓库', 'Git repository'],
   'research.sourceDirectory': ['目录', 'Directory'],
+  'research.sourceBinary': ['二进制产物', 'Binary artifact'],
+  'research.sourcePseudocode': ['伪代码/反编译物', 'Pseudocode/decompilation'],
   'research.checkpointsEmpty': ['尚未完成研究轮次。启动持续研究后，完成的检查点和知识产物会显示在这里。', 'No research round has been completed yet. Completed checkpoints and artifacts will appear here after continuous research runs.'],
   'research.kind': ['消息类型', 'Message type'],
   'research.question': ['问题 / 研究请求', 'Question / research request'],

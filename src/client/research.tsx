@@ -120,7 +120,7 @@ export function LocalResearchPanel() {
           </li>)}</ul>}
         </details>
         <details><summary><span>{t('research.sources')}</span><span className="dt-research-disclosure-hint"><span className="dt-research-expand">{t('research.expand')}</span><span className="dt-research-collapse">{t('research.collapse')}</span></span></summary><ul className="dt-research-sources">{data.sources.map(source =>
-          <li key={source.id}><span className="dt-source-kind">{t(source.kind === 'directory' ? 'research.sourceDirectory' : 'research.sourceGit')}</span><strong>{source.id}</strong><code>{source.path}</code><code>{source.revision}</code></li>)}</ul></details>
+          <li key={source.id}><span className="dt-source-kind">{t(source.kind === 'git' ? 'research.sourceGit' : source.kind === 'directory' ? 'research.sourceDirectory' : source.kind === 'binary' ? 'research.sourceBinary' : 'research.sourcePseudocode')}</span><strong>{source.id}</strong><code>{source.path}</code><code>{source.revision}</code></li>)}</ul></details>
       </section>
       <section className="dt-research-card dt-research-checkpoints">
         <div className="dt-research-card-head"><div><p className="dt-research-kicker">{t('research.checkpoints')}</p><h3>{data.continuous.totalRounds}</h3></div><span className="dt-research-card-caption">{t('research.rounds')}</span></div>
