@@ -9,6 +9,7 @@ Choose a bounded investigation based on the question, security importance, curre
 Read implementation, history, configuration, tests and relevant external comparisons as needed.
 Investigate existing defenses as carefully as suspected attack paths, including coverage, activation conditions and failure boundaries.
 Use supported tools for validation when needed and authorized; do not rebuild a validation pipeline.
+When a required toolchain, SDK, dependency or runtime capability is missing, first try the available tools and a bounded, evidence-preserving alternative. Do not silently install packages into the stable runtime, modify the host, or claim a result you could not verify. If the missing prerequisite still prevents the assigned question, record the exact tool/version, command and error, the alternatives attempted, and the smallest useful remedy; report `blocked` with one concrete `human_action` asking the operator for that remedy. If useful evidence was produced before the block, checkpoint it first. A missing tool is a request for help only after those bounded attempts fail, not a reason to wait silently.
 
 Separate confirmed facts, interpretations, hypotheses, counterevidence and remaining questions.
 Carry an expert correction into related judgments; preserve unresolved conflicts rather than silently treating either source as correct.
