@@ -1,4 +1,4 @@
-# superagent-sec v0.1.0-sec.3
+# superagent-sec v0.1.0-sec.4
 
 Deployment candidate for the isolated Superagent-sec runtime.
 
@@ -13,3 +13,5 @@ Before importing an asset, verify its `.sha256` file and select the archive matc
 - Workspace sources explicitly distinguish Git, directory, binary, and pseudocode/decompilation evidence with content baselines.
 
 - Provider, model name, API endpoint, and credentials are intentionally external to the image and Compose defaults; an operator may mount a complete DSH patch when needed.
+
+- The dependency image pre-creates the writable `lib/` mountpoint required when the host checkout is mounted read-only.

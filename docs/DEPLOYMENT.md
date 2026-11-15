@@ -31,8 +31,8 @@ export DEEPSEEK_API_KEY='从 secret 注入，不写入文件'
 镜像只承担依赖和运行时的稳定层，不包含 Superagent-sec 的应用源码或 `lib/` 构建产物；项目 checkout、研究工作区和运行状态仍由 host 提供。Compose 启动时用 host checkout 构建当前 `lib/`，因此普通代码更新不需要重建镜像。镜像按 CPU 架构发布，不能把 arm64 镜像直接搬到 amd64 主机（反之亦然）。在可联网机器上执行下面的导出脚本：
 
 ```sh
-./scripts/export-docker-release.sh v0.1.0-sec.3
-ls -lh .artifacts/releases/v0.1.0-sec.3/
+./scripts/export-docker-release.sh v0.1.0-sec.4
+ls -lh .artifacts/releases/v0.1.0-sec.4/
 ```
 
 脚本会根据 Dockerfile 的锁定依赖层导出对应架构的 Docker archive，并为每个 archive 生成 `.sha256` 和构建元数据。当前内网使用 `SUPERAGENT_RELEASE_PLATFORMS=linux/amd64`。发布前应确认 checkout 干净，并把 commit SHA 记录在 Release 说明中。
@@ -41,11 +41,11 @@ ls -lh .artifacts/releases/v0.1.0-sec.3/
 
 ```sh
 git push origin feature/superagent-sec-deployment
-git tag v0.1.0-sec.3
-git push origin v0.1.0-sec.3
-gh release create v0.1.0-sec.3 .artifacts/releases/v0.1.0-sec.3/* \
-  --prerelease --title 'superagent-sec v0.1.0-sec.3' \
-  --notes-file docs/RELEASE-v0.1.0-sec.3.md
+git tag v0.1.0-sec.4
+git push origin v0.1.0-sec.4
+gh release create v0.1.0-sec.4 .artifacts/releases/v0.1.0-sec.4/* \
+  --prerelease --title 'superagent-sec v0.1.0-sec.4' \
+  --notes-file docs/RELEASE-v0.1.0-sec.4.md
 ```
 
 如果联网机器没有 `gh`，可在 GitHub 网页的该 tag Release 页面上传同一目录中的 `.tar.gz`、`.sha256` 和 `.json` 文件。不要把 API key、web token 或 `deploy/.env` 上传为 Release asset。
@@ -66,9 +66,9 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f
 从 Release 下载后先校验并导入对应架构：
 
 ```sh
-sha256sum -c superagent-sec-v0.1.0-sec.3-linux-amd64.tar.gz.sha256
-docker load < superagent-sec-v0.1.0-sec.3-linux-amd64.tar.gz
-sed -i 's/^SUPERAGENT_IMAGE_TAG=.*/SUPERAGENT_IMAGE_TAG=v0.1.0-sec.3-linux-amd64/' deploy/.env
+sha256sum -c superagent-sec-v0.1.0-sec.4-linux-amd64.tar.gz.sha256
+docker load < superagent-sec-v0.1.0-sec.4-linux-amd64.tar.gz
+sed -i 's/^SUPERAGENT_IMAGE_TAG=.*/SUPERAGENT_IMAGE_TAG=v0.1.0-sec.4-linux-amd64/' deploy/.env
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --no-build
 ```
 

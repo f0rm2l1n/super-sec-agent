@@ -21,6 +21,7 @@ RUN --mount=type=cache,id=superagent-pnpm,target=/pnpm/store \
 # Compose mounts the host checkout at this path. The dependency volume is
 # initialized from this image; the source and generated lib/ stay outside it.
 RUN mkdir -p /workspace/super-sec-agent \
+  && mkdir -p /workspace/super-sec-agent/lib \
   && cp -a node_modules /workspace/super-sec-agent/node_modules
 
 RUN mkdir -p /var/lib/superagent/workspace /var/lib/superagent/state \
