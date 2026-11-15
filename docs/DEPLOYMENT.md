@@ -1,6 +1,6 @@
 # Superagent-sec 部署速查
 
-这份文档给内部 Agent 使用。目标是：普通网络用一个脚本启动；受限内网把镜像带进去；项目源码和研究工作区始终留在 host 上。
+这份文档给内部 Agent 使用。目标是：普通网络用一个脚本启动；受限内网把稳定运行时镜像带进去；当前 checkout 在 Compose 构建应用镜像；项目工作区和研究状态始终留在 host 上。
 
 ## 选择运行方式
 
@@ -28,7 +28,7 @@ export DEEPSEEK_API_KEY='从 secret 注入，不写入文件'
 
 ## 受限内网镜像
 
-镜像只承担依赖和运行时的稳定层，不包含 Superagent-sec 的应用源码或 `lib/` 构建产物；项目 checkout、研究工作区和运行状态仍由 host 提供。Compose 启动时用 host checkout 构建当前 `lib/`，因此普通代码更新不需要重建镜像。镜像按 CPU 架构发布，不能把 arm64 镜像直接搬到 amd64 主机（反之亦然）。在可联网机器上执行下面的导出脚本：
+发布的镜像只承担依赖和运行时的稳定层，不包含 Superagent-sec 的应用源码或 `lib/` 构建产物。Compose 使用当前 checkout 构建一个本地应用镜像，应用源码和 `lib/` 都在这个镜像层中；目标项目工作区和运行状态仍由 host 提供。这样代码更新只需重新构建应用层，依赖变化才需要新的运行时 Release。镜像按 CPU 架构发布，不能把 arm64 镜像直接搬到 amd64 主机（反之亦然）。在可联网机器上执行下面的导出脚本：
 
 ```sh
 ./scripts/export-docker-release.sh v0.1.0-sec.5
@@ -37,10 +37,12 @@ ls -lh .artifacts/releases/v0.1.0-sec.5/
 
 脚本会根据 Dockerfile 的锁定依赖层导出对应架构的 Docker archive，并为每个 archive 生成 `.sha256` 和构建元数据。当前内网使用 `SUPERAGENT_RELEASE_PLATFORMS=linux/amd64`。发布前应确认 checkout 干净，并把 commit SHA 记录在 Release 说明中。
 
-导出前先运行本地容器 smoke check，验证只读 host checkout、依赖 volume、`lib/` volume 和 host 代码构建路径：
+导出前先运行本地容器 smoke check，验证运行时镜像能作为基础层，并且当前 checkout 会在应用镜像中完成构建：
 
 ```sh
-./scripts/container-smoke.sh v0.1.0-sec.5-linux-amd64
+SUPERAGENT_RUNTIME_IMAGE=superagent-sec-runtime:smoke \
+SUPERAGENT_APP_IMAGE=superagent-sec-app:smoke \
+./scripts/container-smoke.sh
 ```
 
 上传到 GitHub Release（联网机器需已安装并登录 `gh`）：
@@ -56,31 +58,31 @@ gh release create v0.1.0-sec.5 .artifacts/releases/v0.1.0-sec.5/* \
 
 如果联网机器没有 `gh`，可在 GitHub 网页的该 tag Release 页面上传同一目录中的 `.tar.gz`、`.sha256` 和 `.json` 文件。不要把 API key、web token 或 `deploy/.env` 上传为 Release asset。
 
-内网准备源码 checkout、项目根和运行数据，然后复制 `deploy/.env.example` 为 `deploy/.env`：
+内网准备源码 checkout、项目根和运行数据，然后复制 `deploy/.env.example` 为 `deploy/.env`。源码 checkout 只作为 Compose build context，不挂载进运行中的容器：
 
 ```sh
-export SUPERAGENT_SOURCE_DIR=/srv/superagent-sec/app
 export SUPERAGENT_PROJECTS_DIR=/srv/superagent-sec/projects
 export SUPERAGENT_PROJECT_ID=tinyproxy
 export SUPERAGENT_DATA_DIR=/srv/superagent-sec/runtime/tinyproxy
-export DEEPSEEK_API_KEY='从内网 secret 注入'
-docker load < superagent-sec.tar.gz
-docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --no-build
+docker load < superagent-sec-runtime-v0.1.0-sec.5-linux-amd64.tar.gz
+docker compose --env-file deploy/.env -f deploy/compose.yaml build
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d
 docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f
 ```
 
 从 Release 下载后先校验并导入对应架构：
 
 ```sh
-sha256sum -c superagent-sec-v0.1.0-sec.5-linux-amd64.tar.gz.sha256
-docker load < superagent-sec-v0.1.0-sec.5-linux-amd64.tar.gz
-sed -i 's/^SUPERAGENT_IMAGE_TAG=.*/SUPERAGENT_IMAGE_TAG=v0.1.0-sec.5-linux-amd64/' deploy/.env
-docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --no-build
+sha256sum -c superagent-sec-runtime-v0.1.0-sec.5-linux-amd64.tar.gz.sha256
+docker load < superagent-sec-runtime-v0.1.0-sec.5-linux-amd64.tar.gz
+sed -i 's#^SUPERAGENT_RUNTIME_IMAGE=.*#SUPERAGENT_RUNTIME_IMAGE=superagent-sec-runtime:v0.1.0-sec.5-linux-amd64#' deploy/.env
+docker compose --env-file deploy/.env -f deploy/compose.yaml build
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d
 ```
 
-升级时先下载并校验新 archive，再执行 `docker load` 和 `docker compose up -d --no-build`；回滚只需把 `SUPERAGENT_IMAGE_TAG` 改回旧版本。源码 checkout 更新不需要重建镜像；只有 `package.json`、`pnpm-lock.yaml`、Dockerfile 或依赖层改变时才构建新的 Release image。
+升级时先下载并校验新 archive，再执行 `docker load`、`docker compose build` 和 `docker compose up -d`；回滚只需把 `SUPERAGENT_RUNTIME_IMAGE` 改回旧版本并重新构建应用层。源码 checkout 更新后执行 `git pull`、`docker compose build` 和 `docker compose up -d`。只有 `package.json`、`pnpm-lock.yaml`、Dockerfile 或依赖层改变时才构建新的 Release runtime image。
 
-镜像提供 Node、pnpm、DSH、锁定依赖、构建工具和 OpenSSH client；应用 checkout 以只读方式挂载，`node_modules` 与生成的 `lib` 使用独立 volume。源码更新后在 host 执行 `git pull`，再 `docker compose restart`；只有锁文件、`package.json`、Dockerfile 或依赖层改动时才重新构建镜像。
+运行时镜像提供 Node、pnpm、DSH、锁定依赖、构建工具和 OpenSSH client；应用镜像由 Compose 从当前 checkout 构建，包含源码和生成的 `lib/`。容器启动时不向 checkout、`node_modules` 或 `lib/` 写入任何内容，也不依赖 host 上的 Node 依赖。
 
 ## 挂载和 SSH
 

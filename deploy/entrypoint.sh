@@ -2,8 +2,7 @@
 set -eu
 
 profile=${SUPERAGENT_PROFILE:-superagent-sec}
-source_mount=${SUPERAGENT_SOURCE_MOUNT:-/workspace/superagent-source}
-app_dir=${SUPERAGENT_APP_DIR:-/workspace/super-sec-agent}
+app_dir=${SUPERAGENT_APP_DIR:-/opt/superagent-sec}
 dsh_home=${DSH_HOME:-/var/lib/superagent/dsh-home}
 workspace=${SUPERAGENT_WORKSPACE:-/var/lib/superagent/workspace}
 projects_dir=${SUPERAGENT_PROJECTS_DIR:-/var/lib/superagent/projects}
@@ -14,28 +13,24 @@ external_patch=${SUPERAGENT_DSH_PATCH_FILE:-}
 
 mkdir -p "$dsh_home" "$workspace" "$projects_dir" "$state_dir" "$(dirname "$token_file")"
 chmod 700 "$dsh_home" "$(dirname "$token_file")" 2>/dev/null || true
-if [ ! -f "$source_mount/package.json" ]; then
-  echo "Superagent source mount is missing package.json: $source_mount" >&2
+if [ ! -f "$app_dir/package.json" ]; then
+  echo "Superagent application image is missing package.json: $app_dir" >&2
   exit 1
 fi
-mkdir -p "$app_dir"
-# Keep the host checkout read-only and copy only application files into the
-# container's writable layer. Dependency and build volumes stay mounted at
-# their stable paths and are excluded from this sync.
-find "$app_dir" -mindepth 1 -maxdepth 1 ! -name node_modules ! -name lib -exec rm -rf {} +
-find "$source_mount" -mindepth 1 -maxdepth 1 ! -name node_modules ! -name lib -exec cp -a {} "$app_dir"/ \;
 if [ ! -d "$app_dir/node_modules" ]; then
-  echo "Superagent dependency volume is missing: $app_dir/node_modules" >&2
+  echo "Superagent application image is missing node_modules: $app_dir/node_modules" >&2
   exit 1
 fi
 if [ ! -f "$app_dir/node_modules/.modules.yaml" ]; then
-  echo "Superagent dependency volume is uninitialized; rebuild the image before starting" >&2
+  echo "Superagent application image has no pnpm dependency metadata; rebuild the image" >&2
   exit 1
 fi
-pnpm --dir "$app_dir" build >/dev/null
-if [ "${SUPERAGENT_SMOKE_ONLY:-}" = 1 ]; then
-  echo 'Superagent container smoke build completed.'
-  exit 0
+if [ ! -f "$app_dir/lib/index.js" ]; then
+  echo "Superagent application image is missing lib/index.js; build the app image before starting" >&2
+  exit 1
+fi
+if [ "${SUPERAGENT_BUILD_ON_START:-false}" = true ]; then
+  pnpm --dir "$app_dir" build >/dev/null
 fi
 
 ssh_secret_dir=${SUPERAGENT_SSH_SECRET_DIR:-/var/lib/superagent/secrets/ssh}

@@ -5,7 +5,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 VERSION=${1:-v$(node -p "require('./package.json').version")}
 VERSION=${VERSION#v}
 TAG="v${VERSION}"
-IMAGE_REPOSITORY=${SUPERAGENT_IMAGE_REPOSITORY:-superagent-sec}
+IMAGE_REPOSITORY=${SUPERAGENT_IMAGE_REPOSITORY:-superagent-sec-runtime}
 RELEASE_DIR=${SUPERAGENT_RELEASE_DIR:-"$ROOT/.artifacts/releases/$TAG"}
 PLATFORMS=${SUPERAGENT_RELEASE_PLATFORMS:-linux/amd64}
 DSH_VERSION=${DSH_VERSION:-0.2.1-rc.3}

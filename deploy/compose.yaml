@@ -1,11 +1,12 @@
 services:
   superagent-sec:
+    platform: ${SUPERAGENT_CONTAINER_PLATFORM:-}
     build:
       context: ..
-      dockerfile: deploy/Dockerfile
+      dockerfile: deploy/App.Dockerfile
       args:
-        DSH_VERSION: ${DSH_VERSION:-0.2.1-rc.3}
-    image: superagent-sec:${SUPERAGENT_IMAGE_TAG:-stable}
+        RUNTIME_IMAGE: ${SUPERAGENT_RUNTIME_IMAGE:-superagent-sec-runtime:stable}
+    image: ${SUPERAGENT_APP_IMAGE:-superagent-sec-app:local}
     restart: unless-stopped
     # Optional operator-managed secrets/configuration. This file is never
     # copied into the image or committed to the application checkout.
@@ -15,8 +16,7 @@ services:
       - "${SUPERAGENT_BIND_HOST:-127.0.0.1}:${SUPERAGENT_HOST_WEB_PORT:-3184}:3184"
     environment:
       SUPERAGENT_PROFILE: ${SUPERAGENT_PROFILE:-superagent-sec}
-      SUPERAGENT_SOURCE_MOUNT: /workspace/superagent-source
-      SUPERAGENT_APP_DIR: /workspace/super-sec-agent
+      SUPERAGENT_APP_DIR: /opt/superagent-sec
       SUPERAGENT_PROJECTS_DIR: /var/lib/superagent/projects
       SUPERAGENT_PROJECT_ID: ${SUPERAGENT_PROJECT_ID:-default}
       SUPERAGENT_WORKSPACE: ${SUPERAGENT_WORKSPACE:-/var/lib/superagent/projects/${SUPERAGENT_PROJECT_ID:-default}/workspace}
@@ -38,11 +38,8 @@ services:
       NO_PROXY: ${SUPERAGENT_NO_PROXY:-127.0.0.1,localhost}
       npm_config_registry: ${SUPERAGENT_PNPM_REGISTRY:-}
     volumes:
-      # The checkout stays on the host. The image supplies the toolchain and
-      # the two child volumes supply writable dependencies/build output.
-      - ${SUPERAGENT_SOURCE_DIR:-..}:/workspace/superagent-source:ro
-      - superagent-node-modules:/workspace/super-sec-agent/node_modules
-      - superagent-lib:/workspace/super-sec-agent/lib
+      # The target project and all runtime state stay on the host. Application
+      # code and its generated lib/ are immutable layers in the app image.
       - ${SUPERAGENT_PROJECTS_DIR:-./.container-data/projects}:/var/lib/superagent/projects
       - ${SUPERAGENT_DATA_DIR:-./.container-data}/state:/var/lib/superagent/state
       - ${SUPERAGENT_DATA_DIR:-./.container-data}/dsh-home:/var/lib/superagent/dsh-home
@@ -50,7 +47,3 @@ services:
       # This path is used only when SUPERAGENT_DSH_PATCH_FILE points to
       # /run/superagent/dsh.patch.yml inside the container.
       - ${SUPERAGENT_DSH_PATCH_HOST_FILE:-./.container-data/dsh.patch.yml}:/run/superagent/dsh.patch.yml:ro
-
-volumes:
-  superagent-node-modules:
-  superagent-lib:

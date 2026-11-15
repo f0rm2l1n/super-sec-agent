@@ -1,11 +1,11 @@
-# Stable dependency/runtime layer. Application source is mounted from the host at runtime.
+# Stable dependency/runtime layer. Application source is copied into a separate
+# image by deploy/App.Dockerfile so this layer can be reused across code updates.
 FROM node:22-bookworm-slim
 
 ARG DSH_VERSION=0.2.1-rc.3
 ARG DEBIAN_FRONTEND=noninteractive
 ENV PNPM_HOME=/pnpm
 ENV PATH=${PNPM_HOME}:${PATH}
-ENV NODE_ENV=production
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates git openssh-client \
@@ -16,13 +16,11 @@ RUN npm install --global pnpm@10.15.1 @deepseek-ai/dsh@${DSH_VERSION}
 WORKDIR /opt/superagent-sec
 COPY package.json pnpm-lock.yaml ./
 RUN --mount=type=cache,id=superagent-pnpm,target=/pnpm/store \
-  pnpm install --frozen-lockfile --prefer-offline
+  pnpm install --frozen-lockfile --prefer-offline --prod=false
 
-# Compose mounts the host checkout at this path. The dependency volume is
-# initialized from this image; the source and generated lib/ stay outside it.
-RUN mkdir -p /workspace/super-sec-agent \
-  && mkdir -p /workspace/super-sec-agent/lib \
-  && cp -a node_modules /workspace/super-sec-agent/node_modules
+# The app image runs with production semantics, but keeps the locked build
+# toolchain in this reusable layer so Compose can compile the current checkout.
+ENV NODE_ENV=production
 
 RUN mkdir -p /var/lib/superagent/workspace /var/lib/superagent/state \
   /var/lib/superagent/dsh-home /var/lib/superagent/secrets/ssh \

@@ -178,19 +178,21 @@ export DSH_SUPERAGENT_ACCESS_TOKEN_FILE=/srv/superagent-sec/projects/tinyproxy/s
 在可联网机器构建一次镜像并导出：
 
 ```sh
-docker build -t superagent-sec:stable --build-arg DSH_VERSION=0.2.1-rc.3 -f deploy/Dockerfile .
-docker save superagent-sec:stable | gzip > superagent-sec-stable.tar.gz
+docker build -t superagent-sec-runtime:stable \
+  --build-arg DSH_VERSION=0.2.1-rc.3 -f deploy/Dockerfile .
+docker save superagent-sec-runtime:stable | gzip > superagent-sec-runtime-stable.tar.gz
 ```
 
-把 `superagent-sec-stable.tar.gz`、`deploy/compose.yaml`、`deploy/.env.example` 和一个不入 Git 的运行环境文件带入内网；复制并填写 `deploy/.env.example`（例如 `/srv/superagent-sec/runtime.env`）后，在内网执行：
+把 `superagent-sec-runtime-stable.tar.gz`、`deploy/compose.yaml`、`deploy/App.Dockerfile`、`deploy/.env.example` 和一个不入 Git 的运行环境文件带入内网；复制并填写 `deploy/.env.example`（例如 `/srv/superagent-sec/runtime.env`）后，在内网执行：
 
 ```sh
-docker load < superagent-sec-stable.tar.gz
-docker compose --env-file /srv/superagent-sec/runtime.env -f deploy/compose.yaml up -d --no-build
+docker load < superagent-sec-runtime-stable.tar.gz
+docker compose --env-file /srv/superagent-sec/runtime.env -f deploy/compose.yaml build
+docker compose --env-file /srv/superagent-sec/runtime.env -f deploy/compose.yaml up -d
 docker compose --env-file /srv/superagent-sec/runtime.env -f deploy/compose.yaml logs -f
 ```
 
-容器镜像包含 Node、pnpm、DSH、依赖、`openssh-client` 和构建产物。运行时源码来自宿主机挂载，默认映射为 `/workspace/super-sec-agent:ro`；`node_modules` 和 `lib` 是从镜像初始化的独立 Docker volume，所以内网主机不需要安装 Node 依赖，也不会修改 checkout。设置 `SUPERAGENT_SOURCE_DIR` 可挂载另一份 host checkout；普通源码更新只需在 host 上 `git pull`，再执行 `docker compose restart`，容器会用镜像内工具链重新构建。若 `package.json` 或 lockfile 改变，需要在可联网机器重建并重新导出镜像，保持依赖层稳定且避免容器向只读源码 mount 写文件。
+运行时镜像包含 Node、pnpm、DSH、锁定依赖和 `openssh-client`，但不包含应用源码。Compose 从当前 checkout 构建应用镜像，构建时生成 `lib/`；运行中的容器只挂载目标项目和运行状态，不挂载源码、`node_modules` 或 `lib`。因此内网主机不需要安装 Node 依赖，也不会修改 checkout。普通源码更新只需在 host 上 `git pull`，再执行 `docker compose build && docker compose up -d`；若 `package.json` 或 lockfile 改变，则先重建并重新导出运行时镜像。
 
 端口和挂载约定如下：
 
@@ -198,7 +200,7 @@ docker compose --env-file /srv/superagent-sec/runtime.env -f deploy/compose.yaml
 | --- | --- | --- | --- |
 | `SUPERAGENT_HOST_WEB_PORT`（默认 `3184`） | `3184` | 带 token 的前端和 WebSocket | 只发布宿主机回环地址 |
 | 不发布 | `3182` | DSH 后端管理 API | 仅容器内部回环访问 |
-| `SUPERAGENT_SOURCE_DIR` | `/workspace/super-sec-agent:ro` | 运行者在 host 上维护的源码 | host bind mount |
+| Compose build context | `/opt/superagent-sec`（应用镜像内） | 当前 checkout 的源码和 `lib/` | 应用镜像层，不运行时挂载 |
 | `SUPERAGENT_PROJECTS_DIR` | `/var/lib/superagent/projects` | 多个项目根；每个项目可有自己的 workspace、repo 和 runtime 目录 | host bind mount，可写 |
 | `SUPERAGENT_DATA_DIR/state` | `/var/lib/superagent/state` | SQLite、worker 状态 | host bind mount，可写 |
 | `SUPERAGENT_DATA_DIR/dsh-home` | `/var/lib/superagent/dsh-home` | 隔离 profile、Session、附件 | host bind mount，可写 |
@@ -218,12 +220,12 @@ cat "$SUPERAGENT_DATA_DIR/secrets/ssh/id_ed25519.pub"
 首次部署示例（源码在 host，数据单独存放）：
 
 ```sh
-export SUPERAGENT_SOURCE_DIR=/srv/superagent-sec/app
 export SUPERAGENT_PROJECTS_DIR=/srv/superagent-sec/projects
 export SUPERAGENT_PROJECT_ID=tinyproxy
 export SUPERAGENT_DATA_DIR=/srv/superagent-sec/runtime/tinyproxy
 export DEEPSEEK_API_KEY='通过内网 secret 注入'
-docker compose -f deploy/compose.yaml up -d --no-build
+docker compose -f deploy/compose.yaml build
+docker compose -f deploy/compose.yaml up -d
 docker compose -f deploy/compose.yaml logs -f
 ```
 
