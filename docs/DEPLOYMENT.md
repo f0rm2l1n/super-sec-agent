@@ -70,28 +70,19 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d
 docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f
 ```
 
-部署前只做网页健康检查时，项目目录可以为空；要开始真实研究，则按下面顺序准备一个标准工作区。只准备 `sources/` 不够，`project.json`、`SCOPE.md` 和 `sources.lock.json` 共同定义研究对象与固定版本。`knowledge/`、`reports/`、`runtime/`、`interactions/` 等空目录由 `expert init` 自动生成，后续按实际研究填写。
-
-先只创建项目容器目录，不要先创建 `workspace/`，因为 `init` 要求工作区为空：
+部署前只做网页健康检查时，项目目录可以为空；要开始真实研究，则运行仓库自带的准备脚本。它会创建项目目录、构建应用层、初始化标准工作区、复制源码、登记普通目录 source，并自动执行 `lock`、`check`、`prepare`。只准备 `sources/` 不够，`project.json`、`SCOPE.md` 和 `sources.lock.json` 共同定义研究对象与固定版本。
 
 ```sh
-install -d -m 0750 /srv/superagent-sec/projects/tinyproxy
-install -d -m 0750 /srv/superagent-sec/runtime/tinyproxy
-docker compose --env-file deploy/.env -f deploy/compose.yaml run --rm --no-deps \
-  --entrypoint pnpm superagent-sec expert init \
-  --workspace /var/lib/superagent/projects/tinyproxy/workspace \
-  --id tinyproxy --topic '项目安全机制与信任边界'
+scripts/prepare-project.sh \
+  --project-id tinyproxy \
+  --source-dir /path/to/ready/source \
+  --kind directory \
+  --topic '项目安全机制与信任边界'
 ```
 
-然后把一个或多个 Git checkout、普通目录、二进制或伪代码资料放入 `workspace/sources/`，编辑 `project.json` 登记它们并选择 `primarySource`，补充 `SCOPE.md`，再固定和检查工作区：
+脚本完成后，按实际情况补充 `workspace/SCOPE.md`；对于目录型 source，脚本已经登记 `sources/main` 并计算了基线。若要登记额外 source，编辑 `project.json` 后重新运行脚本中的同一组 workspace 检查命令，或使用仓库内的 `expert` 命令。脚本使用容器内路径执行这些命令，用户不需要手动区分宿主机路径和容器路径。
 
-```sh
-docker compose --env-file deploy/.env -f deploy/compose.yaml run --rm --no-deps --entrypoint pnpm superagent-sec expert lock --workspace /var/lib/superagent/projects/tinyproxy/workspace
-docker compose --env-file deploy/.env -f deploy/compose.yaml run --rm --no-deps --entrypoint pnpm superagent-sec expert check --workspace /var/lib/superagent/projects/tinyproxy/workspace
-docker compose --env-file deploy/.env -f deploy/compose.yaml run --rm --no-deps --entrypoint pnpm superagent-sec expert prepare --workspace /var/lib/superagent/projects/tinyproxy/workspace
-```
-
-如果已有完整工作区，可以直接复制它，不要再次运行 `init`；确认 `expert check` 通过后再启动持续研究。目标动态运行所需的环境、构建和启动信息放入 `workspace/runtime/`，不需要为了首次启动预先安装所有工具。
+如果已有完整工作区，可以给脚本加 `--no-build` 并使用该目录中的 source；脚本会复用已有 `project.json`，不会覆盖非空的未初始化目录。目标动态运行所需的环境、构建和启动信息放入 `workspace/runtime/`，不需要为了首次启动预先安装所有工具。
 
 `SUPERAGENT_EXTERNAL_ENV_FILE` 默认是 `/dev/null`，所以首次健康检查不需要额外的 secret 文件。若运行者要通过环境变量提供模型凭据或完整 DSH patch，先创建一个只允许运行者读取的文件，再把 `.env` 中的路径改到它：
 
