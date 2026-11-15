@@ -70,6 +70,15 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d
 docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f
 ```
 
+`SUPERAGENT_EXTERNAL_ENV_FILE` 默认是 `/dev/null`，所以首次健康检查不需要额外的 secret 文件。若运行者要通过环境变量提供模型凭据或完整 DSH patch，先创建一个只允许运行者读取的文件，再把 `.env` 中的路径改到它：
+
+```sh
+install -m 600 /dev/null /srv/superagent-sec/runtime/tinyproxy/external.env
+# 写入需要的环境变量后再执行 docker compose build/up
+```
+
+如果使用完整的外部 patch，设置 `SUPERAGENT_DSH_PATCH_FILE=/run/superagent/dsh.patch.yml`；对应的 host 文件由 `SUPERAGENT_DSH_PATCH_HOST_FILE` 只读挂载。未设置外部 patch 时，入口脚本会把 DSH 首次生成的空 patch（`[]`）替换为隔离 web、state、workspace 的默认 patch。模型/provider 仍由 DSH 全局设置或外部 patch 管理，部署脚本不会写死任何模型。
+
 从 Release 下载后先校验并导入对应架构：
 
 ```sh
