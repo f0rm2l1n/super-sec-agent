@@ -85,6 +85,9 @@ const digest = (path: string) => createHash('sha256').update(readFileSync(path))
 const roots = ['knowledge', 'research', 'reports']
 const GAP_MS = 10_000
 const MAX_RESEARCH_RETRIES = 8
+const INITIAL_FRONTIER_QUESTION = '审阅当前项目研究前沿，并选择一个最有安全价值且尚未充分验证的方向。'
+const FRONTIER_REFRESH_QUESTION = '重新扫描已完成研究与未决问题，提出一个未重复且可用项目证据验证的新方向。'
+const questionKey = (question: string) => question.trim().toLocaleLowerCase().replace(/\s+/g, ' ')
 const retryableFailure = (value: unknown): boolean => /(?:\b(?:408|429|500|502|503|504)\b|bad gateway|service unavailable|too many requests|rate limit|overloaded|timeout|timed out|network error|fetch failed|econn|eai_again|socket hang up)/i.test(value instanceof Error ? value.message : String(value))
 const retryDelay = (attempt: number): number => Math.min(5 * 60_000, 15_000 * 2 ** Math.max(0, attempt - 1))
 export interface ContinuousHost {
@@ -254,7 +257,14 @@ export class ContinuousResearch {
         || statSync(path).size > 5_000_000 || item.line > readFileSync(path, 'utf8').split('\n').length) throw new Error('Invalid source evidence')
       return { ...item, revision: source.revision }
     })
-    const next = args.next.map(normalizeCandidate)
+    const completedQuestions = new Set(state.completed.map(round => questionKey(round.question)))
+    const seenQuestions = new Set<string>()
+    const next = args.next.map(normalizeCandidate).filter(candidate => {
+      const key = questionKey(candidate.question)
+      if (completedQuestions.has(key) || seenQuestions.has(key)) return false
+      seenQuestions.add(key)
+      return true
+    })
     if (args.outcome === 'continue' && (!artifacts.length || !evidence.length || !next.length)) throw new Error('Continuing requires changed artifacts, source evidence and next research frontier')
     if (args.outcome === 'blocked' && !args.blocker) throw new Error('A blocker must explain the missing prerequisite')
     const completed: Completed = { id: active.id, question: active.question, rationale: active.rationale, hypothesis: active.hypothesis,
@@ -265,9 +275,21 @@ export class ContinuousResearch {
       state.completed.push(completed); worker.active = undefined; worker.error = undefined; worker.failureCount = 0
       worker.nextAt = new Date(Date.now() + GAP_MS).toISOString(); state.nextAt = worker.nextAt
       const activeOthers = state.candidates.filter(candidate => candidate.status === 'active' && candidate.question !== active.question)
-      const existingOpen = state.candidates.filter(candidate => candidate.status === 'open' && !next.some(item => item.question === candidate.question))
+      const existingOpen = state.candidates.filter(candidate => candidate.status === 'open'
+        && !completedQuestions.has(questionKey(candidate.question)) && !next.some(item => questionKey(item.question) === questionKey(candidate.question)))
       state.candidates = [...next, ...activeOthers, ...existingOpen]
-      if (args.outcome !== 'continue' && !state.candidates.some(candidate => candidate.status === 'open') && !state.workers.some(item => item.active)) state.error = args.blocker ?? '当前研究前沿已耗尽，需要新的方向。'
+      if (args.outcome === 'blocked') state.error = args.blocker
+      else if (args.outcome === 'exhausted' && !state.candidates.some(candidate => candidate.status === 'open') && !state.workers.some(item => item.active)) {
+        if (questionKey(active.question) === questionKey(FRONTIER_REFRESH_QUESTION)) state.error = '当前研究前沿已耗尽，需要新的项目证据或人工授权。'
+        else state.candidates = [normalizeCandidate({
+          question: FRONTIER_REFRESH_QUESTION,
+          rationale: '上一轮前沿已收敛；重新检查项目范围、版本差异、配置、部署和跨组件边界，避免重复已完成问题。',
+          hypothesis: '仍存在尚未被当前知识库覆盖、且可以用项目证据验证的安全问题。',
+          evidencePlan: '回顾 SCOPE.md、已完成检查点、未决问题和所有输入类型，选择一个此前未完成且能获得新证据的方向。',
+          stopCondition: '提出一个未重复的可验证问题并完成首批证据，或明确记录需要人工授权/新材料的具体阻塞。',
+          provenance: 'agent', status: 'open', impact: 4, uncertainty: 4, feasibility: 3,
+        })]
+      }
       this.save(state)
     })
     this.archive(completed)
@@ -376,9 +398,11 @@ export class ContinuousResearch {
         } else {
           const activeQuestions = new Set(state.workers.flatMap(item => item.active ? [item.active.question] : []))
           const candidate = [...state.candidates].filter(item => item.status === 'open' && !activeQuestions.has(item.question)).sort((a, b) => frontierScore(b) - frontierScore(a))[0] ?? (activeQuestions.size ? undefined : normalizeCandidate({
-            question: '审阅当前项目研究前沿，并选择一个最有安全价值且尚未充分验证的方向。', rationale: '首次建立研究前沿，不预设具体模块或漏洞类型。',
-            hypothesis: '当前知识库仍存在一个值得用项目证据验证的安全未知。', evidencePlan: '先读取项目范围、源码基线、已有知识、历史研究和未决问题，再决定具体验证路径。',
-            stopCondition: '形成一个具体、可验证的研究问题，并记录选择依据和首批证据。', provenance: 'agent',
+            question: state.completed.length ? FRONTIER_REFRESH_QUESTION : INITIAL_FRONTIER_QUESTION,
+            rationale: '当前没有可继续的开放问题，需要重新扫描项目范围和已有证据。',
+            hypothesis: '当前知识库之外仍可能存在尚未覆盖、且能够获得项目证据的安全问题。',
+            evidencePlan: '回顾项目范围、已完成检查点、未决问题和所有输入类型，提出一个未重复且可验证的新方向。',
+            stopCondition: '形成一个未重复的可验证研究问题并记录首批证据，或明确需要人工授权/新材料的阻塞。', provenance: 'agent',
           }))
           if (!candidate) continue
           state.candidates = state.candidates.map(item => item.id === candidate.id ? { ...item, status: 'active' } : item)
@@ -402,7 +426,7 @@ export class ContinuousResearch {
               ? '把结果写入 knowledge/ 或 research/ 或 reports/，记录源码版本、路径/行号、事实/假设/反证、未知和安全意义。不得修改 sources/、project.json、SCOPE.md、sources.lock.json，不读 evaluation/。'
               : `这是并发研究槽。为避免多个 worker 覆盖共享知识，每个结果文件必须写入 research/rounds/${active.id}/；不要直接修改 knowledge/、reports/ 或其他 round 的文件。记录源码版本、路径/行号、事实/假设/反证、未知和安全意义。`,
             '必须用 orchestrator_research_checkpoint 提交本 round_id、实际变化的 artifacts、源码 evidence，以及结构化的 next 研究前沿：问题、理由、假设、证据计划、停止条件、影响、未知和可行性。',
-            '检查点成功后立即结束本轮，不要自行循环。若遇到真正前置阻塞，checkpoint outcome=blocked；无新方向时 exhausted。',
+            '检查点成功后立即结束本轮，不要自行循环。若遇到真正前置阻塞，checkpoint outcome=blocked 并说明最小求助条件；若当前静态前沿暂时收敛，checkpoint outcome=exhausted，宿主会安排一次新的前沿扫描。不要重复已完成问题；前沿扫描仍无新方向时才会暂停并等待新的项目证据或人工授权。',
             '用户新问题/订正立即优先，通过 orchestrator_report ready + reply_to_trigger_id 回答用户，然后再恢复本轮；不得把本轮研究当作用户问题的答案。',
             '若这是恢复：先检查已有文件与会话，保留已完成工作，补交检查点，不重做。',
           ].join('\n')

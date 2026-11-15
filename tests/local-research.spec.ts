@@ -205,6 +205,53 @@ it('autonomously advances from changed knowledge to the next question without a 
   expect(h.controller.prompt).not.toHaveBeenCalled()
 })
 
+it('refreshes the research frontier after exhaustion and keeps real blockers stopped', async () => {
+  const root = workspace(), { h, sessionId } = await continuousWorker(root)
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
+    round_id: h.runtime.research!.continuous.view().active!.id,
+    summary: '当前问题集合已检查完毕，要求宿主重新扫描未决方向。', outcome: 'exhausted', artifacts: [], evidence: [],
+    next: [],
+  })
+  let view = h.runtime.research!.continuous.view()
+  expect(view.error).toBeUndefined()
+  expect(view.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'open', question: '重新扫描已完成研究与未决问题，提出一个未重复且可用项目证据验证的新方向。' })]))
+  await idleWorker(h, sessionId)
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 11_000)
+  await h.runtime.pump(); await h.runtime.idle()
+  view = h.runtime.research!.continuous.view()
+  expect(view.active?.question).toBe('重新扫描已完成研究与未决问题，提出一个未重复且可用项目证据验证的新方向。')
+
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
+    round_id: view.active!.id, summary: '重新扫描仍需要新的项目材料或人工授权。', outcome: 'exhausted', artifacts: [], evidence: [], next: [],
+  })
+  expect(h.runtime.research!.continuous.view()).toMatchObject({ status: 'blocked', error: '当前研究前沿已耗尽，需要新的项目证据或人工授权。' })
+})
+
+it('keeps an explicit research prerequisite blocker waiting for a person', async () => {
+  const root = workspace(), { h, sessionId } = await continuousWorker(root)
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
+    round_id: h.runtime.research!.continuous.view().active!.id, summary: '动态验证需要操作者授权。', outcome: 'blocked', artifacts: [], evidence: [], next: [],
+    blocker: '需要操作者授权隔离环境中的动态连接跟踪。',
+  })
+  expect(h.runtime.research!.continuous.view()).toMatchObject({ status: 'blocked', error: '需要操作者授权隔离环境中的动态连接跟踪。' })
+})
+
+it('drops a completed question when an agent returns it as a next candidate', async () => {
+  const root = workspace(), { h, sessionId } = await continuousWorker(root)
+  const completedQuestion = h.runtime.research!.continuous.view().active!.question
+  const first = checkpoint(h, root)
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', first)
+  await idleWorker(h, sessionId)
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 11_000)
+  await h.runtime.pump(); await h.runtime.idle()
+  const active = h.runtime.research!.continuous.view().active!
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
+    round_id: active.id, summary: '重复候选已经被过滤。', outcome: 'exhausted', artifacts: [], evidence: [],
+    next: [{ ...first.next[0]!, question: completedQuestion }],
+  })
+  expect(h.runtime.research!.continuous.view().candidates.map(candidate => candidate.question)).not.toContain(completedQuestion)
+})
+
 it('applies the active research schedule route before each persistent worker round', async () => {
   const root = workspace()
   host = await startRuntime(undefined, { workspace: root })
