@@ -97,6 +97,8 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d
 
 每个项目可以包含多个 repo、普通目录、二进制/库文件、反编译伪代码、`workspace/`、`knowledge/`、`reports/`、`runtime/` 和其他资料；不要假设一个项目只有一个 Git，也不要把所有研究输入都称为源码。`sources/` 是受锁定基线管理的项目证据入口，`runtime/artifacts/` 保存构建、镜像和运行产物，`knowledge/` 与 `reports/` 保存研究输出。`SUPERAGENT_DATA_DIR` 保存 SQLite、隔离 DSH Session、token 和 SSH key。
 
+Compose 默认以容器 root 运行，以保证 DSH、工具链和目标工作区都能正常读写；Linux host 上新生成的 state、知识文件和 SSH 目录可能因此属于 root。内网部署请使用专用 host/runtime 账号，备份或清理这些目录时通过该账号的 Docker 权限执行容器内命令，并把项目资料与运行状态分开备份。不要把 `SUPERAGENT_DATA_DIR` 指向日常用户的 home 配置目录。
+
 首次容器启动会在 `secrets/ssh/id_ed25519` 自动生成持久 ED25519 key，并打印指纹。把 `id_ed25519.pub` 加到目标 runtime 的 `authorized_keys`；容器只发起 SSH，不运行 SSH server，也不映射宿主机 22 端口。
 
 默认前端只绑定宿主机回环地址。远程访问必须使用 SSH tunnel 或已认证的 TLS 反向代理；不要直接暴露后端 3182，也不要把 token 提交到 Git。
