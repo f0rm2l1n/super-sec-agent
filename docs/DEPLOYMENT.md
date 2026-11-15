@@ -70,6 +70,29 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d
 docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f
 ```
 
+部署前只做网页健康检查时，项目目录可以为空；要开始真实研究，则按下面顺序准备一个标准工作区。只准备 `sources/` 不够，`project.json`、`SCOPE.md` 和 `sources.lock.json` 共同定义研究对象与固定版本。`knowledge/`、`reports/`、`runtime/`、`interactions/` 等空目录由 `expert init` 自动生成，后续按实际研究填写。
+
+先只创建项目容器目录，不要先创建 `workspace/`，因为 `init` 要求工作区为空：
+
+```sh
+install -d -m 0750 /srv/superagent-sec/projects/tinyproxy
+install -d -m 0750 /srv/superagent-sec/runtime/tinyproxy
+docker compose --env-file deploy/.env -f deploy/compose.yaml run --rm --no-deps \
+  --entrypoint pnpm superagent-sec expert init \
+  --workspace /var/lib/superagent/projects/tinyproxy/workspace \
+  --id tinyproxy --topic '项目安全机制与信任边界'
+```
+
+然后把一个或多个 Git checkout、普通目录、二进制或伪代码资料放入 `workspace/sources/`，编辑 `project.json` 登记它们并选择 `primarySource`，补充 `SCOPE.md`，再固定和检查工作区：
+
+```sh
+docker compose --env-file deploy/.env -f deploy/compose.yaml run --rm --no-deps --entrypoint pnpm superagent-sec expert lock --workspace /var/lib/superagent/projects/tinyproxy/workspace
+docker compose --env-file deploy/.env -f deploy/compose.yaml run --rm --no-deps --entrypoint pnpm superagent-sec expert check --workspace /var/lib/superagent/projects/tinyproxy/workspace
+docker compose --env-file deploy/.env -f deploy/compose.yaml run --rm --no-deps --entrypoint pnpm superagent-sec expert prepare --workspace /var/lib/superagent/projects/tinyproxy/workspace
+```
+
+如果已有完整工作区，可以直接复制它，不要再次运行 `init`；确认 `expert check` 通过后再启动持续研究。目标动态运行所需的环境、构建和启动信息放入 `workspace/runtime/`，不需要为了首次启动预先安装所有工具。
+
 `SUPERAGENT_EXTERNAL_ENV_FILE` 默认是 `/dev/null`，所以首次健康检查不需要额外的 secret 文件。若运行者要通过环境变量提供模型凭据或完整 DSH patch，先创建一个只允许运行者读取的文件，再把 `.env` 中的路径改到它：
 
 ```sh
