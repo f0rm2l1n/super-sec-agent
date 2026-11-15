@@ -45,10 +45,10 @@ The first implementation pass is complete on `security/local-expert` (2026-11-14
 | 6 | Corrections routed into the same project session | correction branch of the local worker case |
 | 7 | Worker questions, human-priority scheduling and independent checkpoint preservation | human-input and recovery cases in `tests/local-research.spec.ts` |
 | 8 | Source revision and scope drift block further research | drift case in `tests/local-research.spec.ts` and workspace tests |
-| 9 | Existing Executor `maxWorkers` supports parallel independent Tickets; local research serializes one project workspace to protect shared evidence | `tests/runtime-concurrency.spec.ts`; separate workspace/inbox directories |
+| 9 | Special research windows create independent Tickets/Sessions/round directories up to `maxWorkers`; shared knowledge writes are isolated and secondary-lane failures do not stop the primary lane | `tests/local-research.spec.ts` concurrent lanes; `tests/research-runtime-schedule.spec.ts`; `tests/runtime-concurrency.spec.ts` |
 | 10 | Recovery, status, evidence and loopback/local-network boundaries are covered and documented | security suite, build, and this maintenance guide |
 
-Verification completed during this pass: `typecheck` passed; the security suite passed 20 tests; the production build passed; the serial upstream suite passed 1217 tests, with its only failure being the documentation module index, which was fixed by adding `src/security/local-inbox.ts` to `docs/007-architecture.md`. The suite should be rerun after that documentation-only fix before release.
+Verification completed during this pass: the local security suite covers real Runtime/API schedule selection, persistent model route changes, concurrent research lanes, lane artifact isolation and restart recovery. These tests still use a DSH fixture for model turns; real-provider acceptance remains a separate deployment gate.
 
 ## Local operation
 

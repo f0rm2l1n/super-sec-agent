@@ -4,7 +4,9 @@ import { join, relative, resolve, sep } from 'node:path'
 import { z } from 'zod'
 import { canRetry, latestAssignment, liveTicket, type Engine, type Ticket } from '../core/index.ts'
 import type { Store } from '../app/store.ts'
+import type { RoleModel } from '../policy.ts'
 import { record } from '../kv.ts'
+import { activeResearchSchedule } from './research-schedule.ts'
 
 const CandidateInput = z.object({
   id: z.string().trim().min(1).max(120).optional(),
@@ -51,7 +53,7 @@ export const ResearchCheckpointSchema = z.object({
 type Checkpoint = z.infer<typeof ResearchCheckpointSchema>
 interface Round {
   id: string; question: string; rationale: string; hypothesis: string; evidencePlan: string; stopCondition: string
-  startedAt: string; deadline: string
+  startedAt: string; deadline?: string; timeoutMs: number | null
   baseline: Record<string, string>; inputId?: string; recoveries: number
 }
 export interface Completed {
@@ -60,23 +62,42 @@ export interface Completed {
   artifacts: { path: string; sha256: string }[]; evidence: (Checkpoint['evidence'][number] & { revision: string })[]
   next: Checkpoint['next']; blocker?: string
 }
+interface WorkerState {
+  ticketId: string
+  active?: Round
+  nextAt: string
+  failureCount: number
+  retryAt?: string
+  error?: string
+}
 interface State {
-  enabled: boolean; ticketId?: string; active?: Round; completed: Completed[]
-  candidates: Candidate[]; nextAt: string; error?: string
+  enabled: boolean
+  ticketId?: string
+  workers: WorkerState[]
+  active?: Round
+  completed: Completed[]
+  candidates: Candidate[]
+  nextAt: string
+  error?: string
 }
 const stateKey = record<State>('continuous-security-research-v1')
 const digest = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex')
 const roots = ['knowledge', 'research', 'reports']
-const ROUND_MS = 15 * 60_000
 const GAP_MS = 10_000
+const MAX_RESEARCH_RETRIES = 8
+const retryableFailure = (value: unknown): boolean => /(?:\b(?:408|429|500|502|503|504)\b|bad gateway|service unavailable|too many requests|rate limit|overloaded|timeout|timed out|network error|fetch failed|econn|eai_again|socket hang up)/i.test(value instanceof Error ? value.message : String(value))
+const retryDelay = (attempt: number): number => Math.min(5 * 60_000, 15_000 * 2 ** Math.max(0, attempt - 1))
 export interface ContinuousHost {
   store: Store
   engine: Pick<Engine, 'note' | 'report' | 'retryTicket'>
   ticket(): Ticket | undefined
   start(): Ticket
+  startWorker(): Ticket
   validate(): void
   idle(ticketId: string): boolean
   cancel(ticketId: string): void
+  /** Apply the current schedule's model to the persistent worker before a new round. */
+  selectModel?(ticketId: string, model: RoleModel | null): void
   sources: { id: string; path: string; revision: string }[]
 }
 
@@ -93,58 +114,98 @@ export function pendingLocalRequests(store: Store, ticket: Ticket): string[] {
       const trigger = store.triggers.get(id)
       // The standing-research authorization is host-generated context, not a
       // user request that should hold the autonomous scheduler indefinitely.
-      return !answered.has(id) && trigger?.human
+      return !answered.has(id) && trigger?.human && trigger.meta.kind !== 'autonomous'
         && (id === ticket.origin.triggerId || !trigger.text.startsWith('启用持续项目安全研究：'))
     })
 }
 
-/** Durable autonomous rounds on the existing project ticket, with verified file checkpoints and human priority. */
+/** Durable autonomous rounds with independent DSH lanes, verified file checkpoints and human priority. */
 export class ContinuousResearch {
   constructor(private readonly root: string, private readonly host: ContinuousHost) {}
   private state(): State {
     const saved = this.host.store.get(stateKey)
-    if (!saved) return { enabled: false, completed: [], candidates: [], nextAt: new Date(0).toISOString() }
-    const candidates = saved.candidates.map(candidate => normalizeCandidate(candidate as LegacyCandidate))
-    return { ...saved, candidates }
+    if (!saved) return { enabled: false, workers: [], completed: [], candidates: [], nextAt: new Date(0).toISOString() }
+    const normalizeRound = (round: Round | undefined): Round | undefined => round ? {
+      ...round,
+      timeoutMs: round.timeoutMs === undefined
+        ? (round.deadline ? Math.max(0, Date.parse(round.deadline) - Date.parse(round.startedAt)) : null)
+        : round.timeoutMs,
+    } : undefined
+    const workers = (saved.workers?.length ? saved.workers : saved.ticketId ? [{ ticketId: saved.ticketId, active: saved.active, nextAt: saved.nextAt, failureCount: 0 }] : [])
+      .map(worker => ({ ...worker, active: normalizeRound(worker.active), nextAt: worker.nextAt ?? saved.nextAt, failureCount: worker.failureCount ?? 0 }))
+    const ticketId = saved.ticketId ?? workers[0]?.ticketId
+    const activeQuestions = new Set(workers.flatMap(worker => worker.active ? [worker.active.question] : []))
+    // A crash or an older scheduler version can leave a frontier item marked
+    // active after its worker disappeared. Reopen only those orphaned entries;
+    // a candidate attached to a live round remains active until its checkpoint.
+    const candidates = saved.candidates.map(candidate => normalizeCandidate(candidate as LegacyCandidate)).map(candidate =>
+      candidate.status === 'active' && !activeQuestions.has(candidate.question) ? { ...candidate, status: 'open' as const } : candidate)
+    return { ...saved, ticketId, workers, candidates, active: normalizeRound(workers.find(worker => worker.ticketId === ticketId)?.active ?? saved.active) }
   }
-  private save(state: State) { this.host.store.set(stateKey, state) }
+  private save(state: State) {
+    const primary = state.workers.find(worker => worker.ticketId === state.ticketId) ?? state.workers[0]
+    this.host.store.set(stateKey, { ...state, ticketId: primary?.ticketId ?? state.ticketId, active: primary?.active })
+  }
   private pending(ticket: Ticket): boolean { return pendingLocalRequests(this.host.store, ticket).length > 0 }
+  private primary(state: State): WorkerState | undefined {
+    return state.workers.find(worker => worker.ticketId === state.ticketId) ?? state.workers[0]
+  }
+  private ensurePrimary(state: State): WorkerState {
+    let ticket = state.ticketId ? this.host.store.tickets.get(state.ticketId) : undefined
+    if (!ticket || !liveTicket(ticket)) ticket = this.host.ticket()
+    if (!ticket || !liveTicket(ticket)) ticket = this.host.start()
+    let worker = state.workers.find(item => item.ticketId === ticket!.id)
+    if (!worker) { worker = { ticketId: ticket.id, nextAt: new Date(0).toISOString(), failureCount: 0 }; state.workers.unshift(worker) }
+    state.ticketId = ticket.id
+    return worker
+  }
+  private activeSchedule() { return activeResearchSchedule(this.host.store.settings().research) }
+  /** All-day default is one; special windows explicitly opt into more lanes. */
+  capacity(): number { return this.activeSchedule()?.schedule.maxWorkers ?? 1 }
+  private extendDeadline(worker: WorkerState) {
+    if (!worker.active) return
+    if (worker.active.timeoutMs !== null) worker.active.deadline = new Date(Date.now() + worker.active.timeoutMs).toISOString()
+    else delete worker.active.deadline
+  }
+  private extendDeadlines(state: State) {
+    for (const worker of state.workers) this.extendDeadline(worker)
+  }
   control(enabled: boolean) {
     if (enabled) this.host.validate()
     const state = this.state()
     if (enabled && (!state.enabled || !!state.error)) {
-      let ticket = state.ticketId ? this.host.store.tickets.get(state.ticketId) : this.host.ticket()
-      // A completed or stopped project conversation cannot accept new worker
-      // notes. Starting research again creates a fresh authorized ticket while
-      // retaining the same workspace, frontier and completed checkpoints.
-      if (ticket && !liveTicket(ticket)) { delete state.ticketId; ticket = undefined }
-      state.ticketId = (ticket ?? this.host.start()).id
-      const current = this.host.store.tickets.get(state.ticketId)
+      const primary = this.ensurePrimary(state)
+      const current = this.host.store.tickets.get(primary.ticketId)
       if (current && canRetry(current)) this.host.engine.retryTicket(current.id)
-      state.nextAt = new Date().toISOString(); delete state.error
-      if (state.active) { state.active.deadline = new Date(Date.now() + ROUND_MS).toISOString(); state.active.recoveries = 0 }
-    }
-    // Pausing stops scheduling; the current bounded round may checkpoint before going idle.
-    if (!enabled && state.active) {
-      const current = state.ticketId ? this.host.store.tickets.get(state.ticketId) : undefined
-      if (!current || !liveTicket(current)) {
-        delete state.active
-        delete state.error
-        state.nextAt = new Date().toISOString()
+      for (const worker of state.workers) {
+        const ticket = this.host.store.tickets.get(worker.ticketId)
+        if (ticket && worker.ticketId !== primary.ticketId && canRetry(ticket)) this.host.engine.retryTicket(ticket.id)
       }
+      state.nextAt = new Date().toISOString(); delete state.error
+      for (const worker of state.workers) { worker.error = undefined; worker.failureCount = 0; if (worker.active) worker.active.recoveries = 0 }
+      this.extendDeadlines(state)
     }
     state.enabled = enabled; this.save(state)
     return this.view()
   }
   view() {
-    const state = this.state(), ticket = state.ticketId ? this.host.store.tickets.get(state.ticketId) : undefined
+    const state = this.state(), primary = this.primary(state), ticket = primary ? this.host.store.tickets.get(primary.ticketId) : undefined
+    const schedule = activeResearchSchedule(this.host.store.settings().research)
     const human = !!ticket && this.pending(ticket)
+    const activeRounds = state.workers.filter(worker => worker.active)
+    const active = primary?.active
     return { enabled: state.enabled,
-      status: !state.enabled ? 'paused' : state.error ? 'blocked' : this.host.store.settings().paused ? 'system-paused' : human ? 'user-priority' : state.active ? 'researching' : 'waiting',
-      error: state.error, active: state.active ? { id: state.active.id, question: state.active.question, rationale: state.active.rationale,
-        hypothesis: state.active.hypothesis, evidencePlan: state.active.evidencePlan, stopCondition: state.active.stopCondition,
-        startedAt: state.active.startedAt, deadline: state.active.deadline } : null,
+      status: !state.enabled ? 'paused' : state.error ? 'blocked' : this.host.store.settings().paused ? 'system-paused' : human ? 'user-priority' : activeRounds.length ? 'researching' : 'waiting',
+      error: state.error, active: active ? { id: active.id, question: active.question, rationale: active.rationale,
+        hypothesis: active.hypothesis, evidencePlan: active.evidencePlan, stopCondition: active.stopCondition,
+        startedAt: active.startedAt, deadline: active.deadline } : null,
+      workers: state.workers.map(worker => ({ ticketId: worker.ticketId, active: worker.active ? { id: worker.active.id, question: worker.active.question, startedAt: worker.active.startedAt, deadline: worker.active.deadline } : null, nextAt: worker.nextAt, error: worker.error })),
+      activeRounds: activeRounds.map(worker => ({ ticketId: worker.ticketId, id: worker.active!.id, question: worker.active!.question })),
       nextAt: state.nextAt, rounds: state.completed.slice(-30), totalRounds: state.completed.length, candidates: state.candidates,
+      capacity: this.capacity(),
+      schedule: schedule ? { id: schedule.schedule.id, name: schedule.schedule.name, localTime: schedule.localTime,
+        maxWorkers: schedule.schedule.maxWorkers, model: schedule.schedule.model, nextTransitionAt: schedule.nextTransitionAt,
+        timezone: schedule.schedule.timezone } : {},
     }
   }
   private artifact(path: string): string {
@@ -165,24 +226,29 @@ export class ContinuousResearch {
         else if (entry.isFile() && statSync(path).size > 0) { const rel = relative(this.root, path); hashes[rel] = digest(this.artifact(rel)) }
       }
     }
-    for (const root of roots) walk(join(this.root, root))
+    for (const root of roots) if (existsSync(join(this.root, root))) walk(join(this.root, root))
     return hashes
   }
   checkpoint(ticketId: string, input: Checkpoint) {
     const args = ResearchCheckpointSchema.parse(input), state = this.state()
-    if (state.ticketId !== ticketId) throw new Error('Only the project research worker may checkpoint')
+    const worker = state.workers.find(item => item.ticketId === ticketId)
+    if (!worker) throw new Error('Only a project research worker may checkpoint')
     const previous = state.completed.find(round => round.id === args.round_id)
     if (previous) return { recorded: true, duplicate: true, round_id: previous.id }
-    const active = state.active
+    const active = worker.active
     if (!active || active.id !== args.round_id) throw new Error('Stale or unknown research round')
     this.host.validate()
     const artifacts = [...new Set(args.artifacts)].map(path => ({ path, sha256: digest(this.artifact(path)) }))
+    if (worker.ticketId !== state.ticketId) {
+      const laneRoot = `research/rounds/${active.id}/`
+      if (artifacts.some(file => !file.path.startsWith(laneRoot))) throw new Error(`Concurrent research lanes must write artifacts under ${laneRoot}`)
+    }
     if (artifacts.some(file => active.baseline[file.path] === file.sha256)) throw new Error('Checkpoint artifacts must contain actual changes since round start')
     const evidence = args.evidence.map(item => {
       const source = this.host.sources.find(source => source.id === item.source)
       if (!source) throw new Error(`Unknown evidence source: ${item.source}`)
       const directory = resolve(this.root, source.path), path = resolve(directory, item.path)
-      if (!path.startsWith(`${directory}${sep}`) || realpathSync(path) !== path || !statSync(path).isFile()
+      if (!path.startsWith(`${directory}${sep}`) || !existsSync(path) || realpathSync(path) !== path || !statSync(path).isFile()
         || statSync(path).size > 5_000_000 || item.line > readFileSync(path, 'utf8').split('\n').length) throw new Error('Invalid source evidence')
       return { ...item, revision: source.revision }
     })
@@ -194,9 +260,12 @@ export class ContinuousResearch {
       outcome: args.outcome, artifacts, evidence, next, ...(args.blocker ? { blocker: args.blocker } : {}) }
     this.host.store.atomic(() => {
       this.host.engine.report(ticketId, { state: 'progress', summary: `研究检查点 ${active.id}: ${args.summary}` })
-      state.completed.push(completed); state.candidates = next; delete state.active
-      state.nextAt = new Date(Date.now() + GAP_MS).toISOString()
-      if (args.outcome !== 'continue') state.error = args.blocker ?? '当前研究前沿已耗尽，需要新的方向。'
+      state.completed.push(completed); worker.active = undefined; worker.error = undefined; worker.failureCount = 0
+      worker.nextAt = new Date(Date.now() + GAP_MS).toISOString(); state.nextAt = worker.nextAt
+      const activeOthers = state.candidates.filter(candidate => candidate.status === 'active' && candidate.question !== active.question)
+      const existingOpen = state.candidates.filter(candidate => candidate.status === 'open' && !next.some(item => item.question === candidate.question))
+      state.candidates = [...next, ...activeOthers, ...existingOpen]
+      if (args.outcome !== 'continue' && !state.candidates.some(candidate => candidate.status === 'open') && !state.workers.some(item => item.active)) state.error = args.blocker ?? '当前研究前沿已耗尽，需要新的方向。'
       this.save(state)
     })
     this.archive(completed)
@@ -207,76 +276,143 @@ export class ContinuousResearch {
     writeFileSync(join(directory, `${round.id}.json`), `${JSON.stringify(round, null, 2)}\n`)
   }
   tick(): void {
-    const state = this.state()
-    if ((!state.enabled && !state.active) || state.error || this.host.store.settings().paused) return
+    const state = this.state(), activeCount = state.workers.filter(worker => worker.active).length
+    if ((!state.enabled && !activeCount) || state.error || this.host.store.settings().paused) return
     try {
-      const ticket = state.ticketId ? this.host.store.tickets.get(state.ticketId) : undefined
-      if (!ticket || !liveTicket(ticket)) {
-        // An operator may stop the ticket while pausing research. Do not leave
-        // a stale round visible in the panel after that bounded round ends.
-        if (!state.enabled && state.active) {
-          delete state.active
-          delete state.error
-          state.nextAt = new Date().toISOString()
-          this.save(state)
-          return
-        }
-        throw new Error('Research ticket ended or is missing')
+      const primary = state.enabled ? this.ensurePrimary(state) : this.primary(state)
+      const primaryTicket = primary ? this.host.store.tickets.get(primary.ticketId) : undefined
+      if (!primaryTicket || !liveTicket(primaryTicket)) throw new Error('Research ticket ended or is missing')
+      const schedule = this.activeSchedule()
+      const capacity = schedule?.schedule.maxWorkers ?? 1
+      if (state.enabled) {
+        while (state.workers.length < capacity) state.workers.push({ ticketId: this.host.startWorker().id, nextAt: new Date(0).toISOString(), failureCount: 0 })
       }
-      if (ticket.delivery) throw new Error(`Input delivery failed: ${ticket.delivery.error}`)
-      const assignment = latestAssignment(ticket)
-      if (ticket.attention || ['blocked', 'failed'].includes(assignment?.report?.state ?? '')) throw new Error(ticket.attention?.question ?? assignment?.report?.summary ?? 'Worker stopped')
-      if (this.pending(ticket)) {
-        // User work does not consume the autonomous round's wall-clock allowance.
-        if (state.active) { state.active.deadline = new Date(Date.now() + ROUND_MS).toISOString(); this.save(state) }
-        return
-      }
-      if (state.active && Date.now() > Date.parse(state.active.deadline)) {
-        this.host.cancel(ticket.id)
-        throw new Error('Research round exceeded 15 minutes without a checkpoint; inspect the session and resume explicitly')
-      }
-      if (!state.enabled) return
-      if (!this.host.idle(ticket.id) || ticket.undelivered.length || assignment?.state !== 'running') return
-      if (assignment.deliveredAt && (!assignment.idleAt || assignment.idleAt < assignment.deliveredAt)) return
-      if (Date.now() < Date.parse(state.nextAt)) return
-      this.host.validate()
-      // Repair the human-readable archive after a crash between the SQLite commit and file export.
       for (const round of state.completed) if (!existsSync(join(this.root, 'runs', 'continuous-research', `${round.id}.json`))) this.archive(round)
-      if (state.active) {
-        if (state.active.recoveries >= 2) throw new Error('Worker ended repeatedly without a research checkpoint; inspect the session')
-        state.active.recoveries++
-      } else {
-        const candidate = [...state.candidates].filter(item => item.status === 'open').sort((a, b) => frontierScore(b) - frontierScore(a))[0] ?? normalizeCandidate({
-          question: '审阅当前项目研究前沿，并选择一个最有安全价值且尚未充分验证的方向。',
-          rationale: '首次建立研究前沿，不预设具体模块或漏洞类型。',
-          hypothesis: '当前知识库仍存在一个值得用项目证据验证的安全未知。',
-          evidencePlan: '先读取项目范围、源码基线、已有知识、历史研究和未决问题，再决定具体验证路径。',
-          stopCondition: '形成一个具体、可验证的研究问题，并记录选择依据和首批证据。',
-          provenance: 'agent',
+      for (const [index, worker] of state.workers.entries()) {
+        // A lane that was created during a special window may finish its current
+        // round after the window closes, but it must not start a new one outside
+        // the configured capacity.
+        if (index >= capacity && !worker.active) continue
+        let ticket = this.host.store.tickets.get(worker.ticketId)
+        if (!ticket || !liveTicket(ticket)) {
+          if (worker.ticketId === state.ticketId) throw new Error('Primary research ticket ended or is missing')
+          // A secondary lane may have ended while the host was restarting or
+          // recovering a provider failure. Do not leave a dead ticket occupying
+          // a capacity slot forever; reopen its candidate and replace the lane.
+          if (!state.enabled || index >= capacity) continue
+          if (worker.active) state.candidates = state.candidates.map(candidate => candidate.question === worker.active!.question
+            ? { ...candidate, status: 'open' } : candidate)
+          const replacement = this.host.startWorker()
+          worker.ticketId = replacement.id; worker.active = undefined; worker.error = undefined
+          worker.failureCount = 0; delete worker.retryAt; worker.nextAt = new Date(0).toISOString()
+          ticket = replacement
+        }
+        // A human request pauses only the lane it belongs to. Other autonomous
+        // lanes remain eligible during a slow answer on the primary session.
+        if (this.pending(ticket)) {
+          this.extendDeadline(worker)
+          continue
+        }
+        const assignment = latestAssignment(ticket)
+        const failure = ticket.delivery?.error ?? (ticket.attention?.question ?? (['blocked', 'failed'].includes(assignment?.report?.state ?? '') ? assignment?.report?.summary : undefined))
+        if (failure) {
+          if (retryableFailure(failure) && canRetry(ticket) && worker.failureCount < MAX_RESEARCH_RETRIES) {
+            // Keep the failed ticket untouched until the durable backoff expires.
+            // Calling retryTicket immediately would relaunch the model while a
+            // 502/429 is still active and turn a fleet of night lanes into a
+            // rate-limit storm.
+            if (!worker.retryAt) {
+              worker.failureCount++
+              const delay = retryDelay(worker.failureCount)
+              worker.retryAt = new Date(Date.now() + delay).toISOString()
+              worker.nextAt = worker.retryAt
+              worker.error = `暂时失败，将在 ${Math.round(delay / 1000)} 秒后重试：${failure}`
+              continue
+            }
+            if (Date.now() < Date.parse(worker.retryAt)) continue
+            this.host.engine.retryTicket(ticket.id)
+            delete worker.retryAt
+            continue
+          }
+          // A secondary lane is isolated from the operator-facing primary
+          // conversation. Keep its failure visible on that lane while allowing
+          // other research workers to continue; only the primary failure blocks
+          // the whole scheduler.
+          if (worker.ticketId !== state.ticketId) {
+            worker.error = failure
+            continue
+          }
+          throw new Error(failure)
+        }
+        if (worker.active?.deadline && Date.now() > Date.parse(worker.active.deadline)) {
+          this.host.cancel(ticket.id)
+          if (worker.ticketId !== state.ticketId) {
+            state.candidates = state.candidates.map(candidate => candidate.question === worker.active!.question ? { ...candidate, status: 'open' } : candidate)
+            worker.error = '并发研究槽超过了已配置的宿主时限，已暂停该槽位；其他研究槽继续运行。'
+            worker.active = undefined
+            worker.nextAt = new Date(Date.now() + GAP_MS).toISOString()
+            continue
+          }
+          throw new Error('Research round exceeded its configured time limit without a checkpoint; inspect the session and resume explicitly')
+        }
+        if (!state.enabled || !this.host.idle(ticket.id) || ticket.undelivered.length || assignment?.state !== 'running'
+          || assignment.deliveredAt && (!assignment.idleAt || assignment.idleAt < assignment.deliveredAt)
+          || Date.now() < Date.parse(worker.nextAt)) continue
+        this.host.validate()
+        if (worker.active) {
+          if (worker.active.recoveries >= 2) {
+            if (worker.ticketId !== state.ticketId) {
+              state.candidates = state.candidates.map(candidate => candidate.question === worker.active!.question ? { ...candidate, status: 'open' } : candidate)
+              worker.error = '并发研究槽连续结束但未提交检查点，已暂停该槽位；其他研究槽继续运行。'
+              worker.active = undefined
+              worker.nextAt = new Date(Date.now() + GAP_MS).toISOString()
+              continue
+            }
+            throw new Error('Worker ended repeatedly without a research checkpoint; inspect the session')
+          }
+          worker.active.recoveries++
+        } else {
+          const activeQuestions = new Set(state.workers.flatMap(item => item.active ? [item.active.question] : []))
+          const candidate = [...state.candidates].filter(item => item.status === 'open' && !activeQuestions.has(item.question)).sort((a, b) => frontierScore(b) - frontierScore(a))[0] ?? (activeQuestions.size ? undefined : normalizeCandidate({
+            question: '审阅当前项目研究前沿，并选择一个最有安全价值且尚未充分验证的方向。', rationale: '首次建立研究前沿，不预设具体模块或漏洞类型。',
+            hypothesis: '当前知识库仍存在一个值得用项目证据验证的安全未知。', evidencePlan: '先读取项目范围、源码基线、已有知识、历史研究和未决问题，再决定具体验证路径。',
+            stopCondition: '形成一个具体、可验证的研究问题，并记录选择依据和首批证据。', provenance: 'agent',
+          }))
+          if (!candidate) continue
+          state.candidates = state.candidates.map(item => item.id === candidate.id ? { ...item, status: 'active' } : item)
+          const timeoutMs = schedule?.schedule.timeoutSeconds ? schedule.schedule.timeoutSeconds * 1000 : null
+          // The worker Session persists across rounds; select the route at the
+          // round boundary so schedule changes actually affect the next request.
+          this.host.selectModel?.(ticket.id, schedule?.schedule.model ?? null)
+          worker.active = { id: randomUUID(), question: candidate.question, rationale: candidate.rationale, hypothesis: candidate.hypothesis,
+            evidencePlan: candidate.evidencePlan, stopCondition: candidate.stopCondition, startedAt: new Date().toISOString(),
+            ...(timeoutMs === null ? {} : { deadline: new Date(Date.now() + timeoutMs).toISOString() }), timeoutMs, baseline: this.snapshot(), recoveries: 0 }
+          mkdirSync(join(this.root, 'research', 'rounds', worker.active.id), { recursive: true })
+        }
+        const active = worker.active
+        this.host.store.atomic(() => {
+          const text = [
+            'CONTINUOUS_RESEARCH_ROUND (host scheduling context under the operator\'s standing research mandate; not a new human request)',
+            JSON.stringify({ round_id: active.id, proposal: { question: active.question, rationale: active.rationale, hypothesis: active.hypothesis, evidencePlan: active.evidencePlan, stopCondition: active.stopCondition }, recovery: active.recoveries, frontier: state.candidates, recent: state.completed.slice(-3).map(round => ({ question: round.question, summary: round.summary, artifacts: round.artifacts.map(file => file.path) })) }),
+            '研究目标由项目章程和安全边界定义，具体研究问题由你根据当前项目、知识库和研究前沿自主选择。默认中文，关注攻击与防护。',
+            '本轮只完成一个可交接的知识增量。不要只写计划或重复旧结论。',
+            worker.ticketId === state.ticketId
+              ? '把结果写入 knowledge/ 或 research/ 或 reports/，记录源码版本、路径/行号、事实/假设/反证、未知和安全意义。不得修改 sources/、project.json、SCOPE.md、sources.lock.json，不读 evaluation/。'
+              : `这是并发研究槽。为避免多个 worker 覆盖共享知识，每个结果文件必须写入 research/rounds/${active.id}/；不要直接修改 knowledge/、reports/ 或其他 round 的文件。记录源码版本、路径/行号、事实/假设/反证、未知和安全意义。`,
+            '必须用 orchestrator_research_checkpoint 提交本 round_id、实际变化的 artifacts、源码 evidence，以及结构化的 next 研究前沿：问题、理由、假设、证据计划、停止条件、影响、未知和可行性。',
+            '检查点成功后立即结束本轮，不要自行循环。若遇到真正前置阻塞，checkpoint outcome=blocked；无新方向时 exhausted。',
+            '用户新问题/订正立即优先，通过 orchestrator_report ready + reply_to_trigger_id 回答用户，然后再恢复本轮；不得把本轮研究当作用户问题的答案。',
+            '若这是恢复：先检查已有文件与会话，保留已完成工作，补交检查点，不重做。',
+          ].join('\n')
+          const updated = this.host.engine.note(ticket.id, text)
+          active.inputId = updated.inputs.at(-1)!.id
+          worker.nextAt = new Date(Date.now() + GAP_MS).toISOString(); state.nextAt = worker.nextAt; worker.failureCount = 0; worker.error = undefined; this.save(state)
         })
-        state.active = { id: randomUUID(), question: candidate.question, rationale: candidate.rationale,
-          hypothesis: candidate.hypothesis, evidencePlan: candidate.evidencePlan, stopCondition: candidate.stopCondition,
-          startedAt: new Date().toISOString(), deadline: new Date(Date.now() + ROUND_MS).toISOString(), baseline: this.snapshot(), recoveries: 0 }
       }
-      const active = state.active
-      this.host.store.atomic(() => {
-        const text = [
-          'CONTINUOUS_RESEARCH_ROUND (host scheduling context under the operator\'s standing research mandate; not a new human request)',
-          JSON.stringify({ round_id: active.id, proposal: { question: active.question, rationale: active.rationale, hypothesis: active.hypothesis, evidencePlan: active.evidencePlan, stopCondition: active.stopCondition }, deadline: active.deadline, recovery: active.recoveries, frontier: state.candidates, recent: state.completed.slice(-3).map(round => ({ question: round.question, summary: round.summary, artifacts: round.artifacts.map(file => file.path) })) }),
-          '研究目标由项目章程和安全边界定义，具体研究问题由你根据当前项目、知识库和研究前沿自主选择。默认中文，关注攻击与防护。',
-          '本轮只完成一个可交接的知识增量，建议 5–15 次工具操作，15 分钟内结束。不要只写计划或重复旧结论。',
-          '把结果写入 knowledge/ 或 research/ 或 reports/，记录源码版本、路径/行号、事实/假设/反证、未知和安全意义。不得修改 sources/、project.json、SCOPE.md、sources.lock.json，不读 evaluation/。',
-          '必须用 orchestrator_research_checkpoint 提交本 round_id、实际变化的 artifacts、源码 evidence，以及结构化的 next 研究前沿：问题、理由、假设、证据计划、停止条件、影响、未知和可行性。',
-          '检查点成功后立即结束本轮，不要自行循环。若遇到真正前置阻塞，checkpoint outcome=blocked；无新方向时 exhausted。',
-          '用户新问题/订正立即优先，通过 orchestrator_report ready + reply_to_trigger_id 回答用户，然后再恢复本轮；不得把本轮研究当作用户问题的答案。',
-          '若这是恢复：先检查已有文件与会话，保留已完成工作，补交检查点，不重做。',
-        ].join('\n')
-        const updated = this.host.engine.note(ticket.id, text)
-        active.inputId = updated.inputs.at(-1)!.id
-        state.nextAt = new Date(Date.now() + GAP_MS).toISOString(); this.save(state)
-      })
+      this.save(state)
     } catch (error) {
       state.error = (error instanceof Error ? error.message : String(error)).replace(/api_key:\s*[^,\s]+/gi, 'api_key: [redacted]'); this.save(state)
     }
   }
+
 }

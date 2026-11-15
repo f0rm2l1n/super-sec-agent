@@ -9,7 +9,8 @@ it('keeps a failed question editable, retries with the same ID, and opens the re
   const local = { workspace: '/research/sample', id: 'sample', name: 'Sample' }
   server.setup = { ...server.setup, accounts: null, local }
   server.research = { ...local, attention: null, sources: [{ id: 'main', kind: 'git', path: 'sources/main', revision: 'a'.repeat(40), role: 'subject' }],
-    continuous: { enabled: false, status: 'paused', active: null, error: undefined, rounds: [], totalRounds: 0, candidates: [], nextAt: new Date(0).toISOString() },
+    continuous: { enabled: false, status: 'paused', active: null, workers: [], activeRounds: [], capacity: 1, error: undefined, rounds: [], totalRounds: 0, candidates: [], nextAt: new Date(0).toISOString(),
+      schedule: {} },
     inbox: { pending: 0, errors: 0 }, messages: [], sessions: [{ ticketId: 'local-ticket', sessionId: 'worker-local-ticket', title: 'Sample security' }] }
   await mount()
   expect(text()).toContain(zh['research.title'])
@@ -38,4 +39,18 @@ it('keeps a failed question editable, retries with the same ID, and opens the re
   expect(server.research!.messages.at(-1)?.kind).toBe('correction')
   await click(zh['research.openSession'])
   expect(server.opened).toContain('worker-local-ticket')
+})
+
+it('shows the active special schedule and its host-enforced concurrency in the research panel', async () => {
+  const local = { workspace: '/research/sample', id: 'sample', name: 'Sample' }
+  server.setup = { ...server.setup, accounts: null, local }
+  server.research = { ...local, attention: null, sources: [],
+    continuous: { enabled: true, status: 'waiting', active: null, workers: [], activeRounds: [], capacity: 4, error: undefined, rounds: [], totalRounds: 0, candidates: [],
+      nextAt: new Date(0).toISOString(), schedule: { id: 'night', name: '夜间算力', timezone: 'Asia/Shanghai', localTime: '01:30', maxWorkers: 4,
+        model: { provider: 'deepseek', model: 'deepseek-flash' }, nextTransitionAt: '2026-11-15T06:30:00.000Z' } },
+    inbox: { pending: 0, errors: 0 }, messages: [], sessions: [] }
+  await mount()
+  expect(text()).toContain('夜间算力')
+  expect(text()).toContain('研究并发 4')
+  expect(text()).toContain('当前窗口至')
 })

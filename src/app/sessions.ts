@@ -16,6 +16,7 @@ import { RetryHealth } from './retry-health.ts'
 import { initializeRoleModel } from './role-models.ts'
 import { bundledSkills } from './skill-files.ts'
 import { SKILL_PREFIX, type PromptVersion, type Prompts } from './prompts.ts'
+import type { RoleModel } from '../policy.ts'
 import type { Store } from './store.ts'
 import { KV } from '../kv.ts'
 import type { RegisterTool, Tool } from './tools/tool.ts'
@@ -135,7 +136,7 @@ export class Sessions {
     })
   }
   /** Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. */
-  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker'): Promise<Agent> {
+  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker', override?: RoleModel): Promise<Agent> {
     const ctx = this.ctx
     let result = await ctx.sessionController.resolveAgent(id as SessionId)
     if ('error' in result && result.error.code === 'session/not-found') {
@@ -147,11 +148,43 @@ export class Sessions {
     }
     if ('error' in result) throw result.error
     const settings = this.host.store.settings()
-    await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : settings.executor.model)
+    await initializeRoleModel(ctx, result.agent, override ?? (role === 'orchestrator' ? settings.eval.model : settings.executor.model))
     await this.decorate(result.agent)
     ctx.permissionPresets.set(result.agent.session, 'danger-full-access')
     await ctx.sessionController.rename({ sessionId: id as SessionId, title })
     return result.agent
+  }
+  /** Select the route for the next request of an already-loaded Session.
+   *
+   * Research schedules are evaluated between rounds while the worker Session is
+   * intentionally kept alive for context. DSH's AgentModel selection event is
+   * the supported way to change that route without mutating the global default.
+   * A null route restores the current DSH default model.
+   */
+  selectNextModel(sessionId: string, model: RoleModel | null): void {
+    const agent = this.ctx.agents.get(sessionId as SessionId)
+    if (!agent) return
+    type Selection = { provider: string; model: string; reasoningEffort?: string }
+    const context = this.ctx as Context & {
+      get?: (name: string) => unknown
+    }
+    let selection: Selection | undefined
+    if (model) selection = { provider: model.provider, model: model.model,
+      ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}) }
+    else {
+      // Cordis only exposes injected services through the property accessor;
+      // reading ctx.agentDefaultModel on an un-injected parent throws. The
+      // service lookup is optional because an all-day schedule does not need
+      // to append a redundant selection event.
+      const defaults = context.get?.('agentDefaultModel') as { currentSelection?: () => Selection } | undefined
+      try { selection = defaults?.currentSelection?.() } catch { return }
+    }
+    if (!selection) return
+    const controller = context.sessionController as unknown as {
+      selectForNextRequest?: (agent: Agent, selection: Selection) => void
+    }
+    if (controller.selectForNextRequest) controller.selectForNextRequest(agent, selection)
+    else (agent as Agent & { model?: { select: (selection: Selection) => void } }).model?.select(selection)
   }
   /** Returns whether `sessionId` already holds the message delivered under `requestId`, or `false` if the session does not exist. */
   async holds(sessionId: string, requestId: string): Promise<boolean> {

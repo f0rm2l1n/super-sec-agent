@@ -107,6 +107,11 @@ export function LocalResearchPanel() {
         </div>}
         {data.continuous.error && <p role="alert" className="dt-error">{data.continuous.error}</p>}
         <Hint>{t('research.continuousHelp')}</Hint>
+        {'id' in data.continuous.schedule && <div className="dt-research-schedule" role="status">
+          <p className="dt-research-card-caption">{t('research.scheduleActive')}</p>
+          <p>{data.continuous.schedule.name} · {data.continuous.schedule.timezone} · {data.continuous.schedule.localTime}</p>
+          <p className="dt-hint">{t('research.scheduleWorkers', { count: data.continuous.schedule.maxWorkers })} · {t('research.scheduleRunning', { running: data.continuous.activeRounds.length, count: data.continuous.schedule.maxWorkers })} · {t('research.scheduleUntil')} <When at={data.continuous.schedule.nextTransitionAt} /></p>
+        </div>}
         <details open={data.continuous.candidates.length > 0}><summary><span>{t('research.frontier')}</span><span className="dt-research-disclosure-hint"><span className="dt-research-expand">{t('research.expand')}</span><span className="dt-research-collapse">{t('research.collapse')}</span></span></summary>
           {data.continuous.candidates.length === 0 && <Hint>{t('research.frontierEmpty')}</Hint>}
           {data.continuous.candidates.length > 0 && <ul className="dt-research-frontier">{data.continuous.candidates.map(candidate => <li key={candidate.id}>

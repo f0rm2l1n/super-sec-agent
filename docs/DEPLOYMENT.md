@@ -28,12 +28,27 @@ export DEEPSEEK_API_KEY='从 secret 注入，不写入文件'
 
 ## 受限内网镜像
 
-在可联网机器构建并导出：
+镜像是依赖和运行时的稳定层；项目 checkout、研究工作区和运行状态仍由 host 提供。镜像按 CPU 架构发布，不能把 arm64 镜像直接搬到 amd64 主机（反之亦然）。在可联网机器上执行下面的导出脚本：
 
 ```sh
-docker build -t superagent-sec:stable -f deploy/Dockerfile .
-docker save superagent-sec:stable | gzip > superagent-sec.tar.gz
+./scripts/export-docker-release.sh v0.1.0-sec.1
+ls -lh .artifacts/releases/v0.1.0-sec.1/
 ```
+
+脚本会构建当前 checkout、导出 `linux/amd64` 和 `linux/arm64` 两个 Docker archive，并为每个 archive 生成 `.sha256` 和构建元数据。若只需要当前主机架构，可设置 `SUPERAGENT_RELEASE_PLATFORMS=linux/arm64`（amd64 主机相应设置为 `linux/amd64`）。发布前应确认 checkout 干净，并把 commit SHA 记录在 Release 说明中。
+
+上传到 GitHub Release（联网机器需已安装并登录 `gh`）：
+
+```sh
+git push origin feature/superagent-sec-deployment
+git tag v0.1.0-sec.1
+git push origin v0.1.0-sec.1
+gh release create v0.1.0-sec.1 .artifacts/releases/v0.1.0-sec.1/* \
+  --prerelease --title 'superagent-sec v0.1.0-sec.1' \
+  --notes-file docs/RELEASE-v0.1.0-sec.1.md
+```
+
+如果联网机器没有 `gh`，可在 GitHub 网页的该 tag Release 页面上传同一目录中的 `.tar.gz`、`.sha256` 和 `.json` 文件。不要把 API key、web token 或 `deploy/.env` 上传为 Release asset。
 
 内网准备源码 checkout、项目根和运行数据，然后复制 `deploy/.env.example` 为 `deploy/.env`：
 
@@ -48,6 +63,17 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --no-build
 docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f
 ```
 
+从 Release 下载后先校验并导入对应架构：
+
+```sh
+sha256sum -c superagent-sec-v0.1.0-sec.1-linux-amd64.tar.gz.sha256
+docker load < superagent-sec-v0.1.0-sec.1-linux-amd64.tar.gz
+sed -i 's/^SUPERAGENT_IMAGE_TAG=.*/SUPERAGENT_IMAGE_TAG=v0.1.0-sec.1-linux-amd64/' deploy/.env
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --no-build
+```
+
+升级时先下载并校验新 archive，再执行 `docker load` 和 `docker compose up -d --no-build`；回滚只需把 `SUPERAGENT_IMAGE_TAG` 改回旧版本。源码 checkout 更新不需要重建镜像；只有 `package.json`、`pnpm-lock.yaml`、Dockerfile 或依赖层改变时才构建新的 Release image。
+
 镜像提供 Node、pnpm、DSH、依赖、构建工具和 OpenSSH client；源码以只读方式挂载，`node_modules` 与 `lib` 使用独立 volume。源码更新后在 host 执行 `git pull`，再 `docker compose restart`；锁文件或 `package.json` 改动时重新构建镜像。
 
 ## 挂载和 SSH
@@ -60,9 +86,17 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f
 
 ## 并发与模型使用边界
 
-当前持续研究是**单项目、单研究 Ticket、单 worker Session、单模型路由**。每轮只投递一个研究提案，不会同时调用多个 DeepSeek API，也不会自动把一个问题拆给多个算力。通用 DSH Executor 仍支持多个独立 Ticket，但本地研究工作区刻意串行，以免多个 worker 同时写入 `knowledge/` 和 `reports/` 造成证据冲突。
+持续研究仍是**单项目实例**，但特殊时间窗可以配置多个独立 research lane。每个 lane 是独立的 Engine Ticket、DSH worker Session 和 round ID；宿主按当前时间窗的 `maxWorkers` 创建 lane，日常没有特殊时间窗时默认只运行一个 lane。全局 `executor.maxWorkers` 是普通工单池上限；研究调度的 `maxWorkers` 是研究池上限（当前可配置 1–256），并通过总容量门控，避免研究并发把普通工单池偷偷扩大。
 
-未来的 Planner、Researcher、Reviewer 多 Agent 方案尚未启用。不要通过提高 `maxWorkers` 来开启研究并发；那只影响通用 Ticket，不会让同一个研究前沿安全地并行执行。并发研究需要独立 round 目录、证据合并和冲突处理，属于后续里程碑。
+并发 lane 不共享可写知识目录：主 lane 可以写 `knowledge/`、`reports/` 或 `research/`，其他 lane 必须写入 `research/rounds/<round-id>/`，检查点也会拒绝越界产物。源码和锁定版本仍由所有 lane 只读共享，检查点和 SQLite 状态由宿主提交。窗口结束后已经开始的 lane 可以完成当前 round，但不会在窗口外新开 round。
+
+502、429、限流和网络错误使用宿主持久退避后再重试；主 lane 的不可恢复错误会阻塞调度，次要 lane 的错误只暂停该 lane 并保留面板错误。模型路由在每个新 round 开始前重新选择，因此白天/夜间可以使用不同的 provider、model 和凭据。Planner、Reviewer 和跨项目队列仍未启用。
+
+## 研究设置
+
+持续研究的调度时区、时间段、研究 worker 数量、模型选择和单轮研究时限可在平台的“设置 → 研究调度”中修改，不需要编辑部署文件。默认调度不限单轮时限；只有特殊调度明确选择时限时，单轮研究时限才会从宿主投递本轮研究提案开始计时，并在 agent 提交检查点前由宿主看门狗执行。它不是模型 API 的请求 timeout，也不是 agent 的工具次数或 token 配额。每条调度拥有自己的时区，模型选择直接引用 DSH 全局设置中已经配置的 provider/model；API 地址、凭据和模型 token/采样参数不在 Superagent-sec 中复制维护。
+
+研究 round 创建时绑定当前时间段的模型选择；切换时间段不会中断已经运行的 round。上下文上限、输出上限和 temperature 统一由 DSH 全局模型设置负责，研究调度不重复覆盖。provider route 必须已由 DSH adapter 注册，API 地址和凭据的 wire-level 配置由 DSH 全局设置负责。
 
 ## 验收
 

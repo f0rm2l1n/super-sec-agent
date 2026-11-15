@@ -176,6 +176,22 @@ it('counts a launch under way against maxWorkers, so a bot\'s Input for an idle 
   expect(h.runtime.store.tickets.get(one.ticket.id)!.undelivered).toHaveLength(1)
 })
 
+it('lets an enabled research window raise research capacity without raising the ordinary pool', () => {
+  const running = ['research-1']
+  const slots = new WorkerSlots(() => running, () => 1,
+    id => id.startsWith('research-') ? 'research' : 'general', () => 3)
+  expect(slots.launches()).toBe(2)
+  slots.reserve('research-2', 'launch')
+  slots.reserve('research-3', 'launch')
+  expect(() => slots.reserve('research-4', 'launch')).toThrow('No worker slot is free')
+  expect(() => slots.reserve('ordinary-1', 'launch')).toThrow('No worker slot is free')
+  slots.free('research-2')
+  // `launches()` is the effect-queue limit and excludes launch reservations;
+  // the queue itself accounts for launches already in flight.
+  expect(slots.launches()).toBe(2)
+  expect(() => slots.reserve('ordinary-1', 'launch')).not.toThrow()
+})
+
 it('records on the ticket that its worker Session could not be created again', async () => {
   const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
   h.agents.get(one.sessionId)!.status = 'idle'
@@ -796,7 +812,10 @@ it('wakes an idle worker for a status request in the slot kept for a person, whi
 })
 it('tells a passing failure of the provider or the network from one that a later try would meet again', () => {
   for (const error of [Object.assign(new Error('x'), { status: 429 }), Object.assign(new Error('x'), { status: 503 }),
-    Object.assign(new Error('connect'), { code: 'ECONNRESET' }), new TypeError('fetch failed'), new Error('getaddrinfo EAI_AGAIN api.example.com')]) {
+    Object.assign(new Error('x'), { statusCode: 502 }), Object.assign(new Error('x'), { response: { status: 503 } }),
+    Object.assign(new Error('x'), { cause: Object.assign(new Error('x'), { status: 504 }) }),
+    Object.assign(new Error('connect'), { code: 'ECONNRESET' }), new TypeError('fetch failed'), new Error('getaddrinfo EAI_AGAIN api.example.com'),
+    new Error('Bad Gateway')]) {
     expect(transient(error)).toBe(true)
   }
   for (const error of [Object.assign(new Error('x'), { status: 400 }), Object.assign(new Error('x'), { status: 401 }), new Error('context too long'), 'LlmError: offline']) {

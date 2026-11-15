@@ -10,7 +10,7 @@ import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Execu
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
-import type { Settings } from '../policy.ts'
+import type { RoleModel, Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
 import { executionRoot, type Variable } from '../app/execution-environment.ts'
@@ -43,13 +43,22 @@ const fromPerson = (input?: TicketInput): boolean => input?.kind === 'trigger' ?
  */
 class PrepareFailed extends Error {}
 const PASSING = new RegExp(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'UND_ERR', 'socket hang up', 'fetch failed',
-  'network error', 'overloaded', 'rate limit', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
+  'network error', 'overloaded', 'rate limit', 'too many requests', 'bad gateway', 'service unavailable', 'gateway timeout', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
+function errorStatus(error: unknown, seen = new Set<object>()): number | undefined {
+  if (!error || typeof error !== 'object' || seen.has(error)) return undefined
+  seen.add(error)
+  const value = error as { status?: unknown; statusCode?: unknown; httpStatus?: unknown; response?: unknown; cause?: unknown }
+  for (const candidate of [value.status, value.statusCode, value.httpStatus, (value.response as { status?: unknown } | undefined)?.status]) {
+    if (typeof candidate === 'number' && Number.isInteger(candidate)) return candidate
+  }
+  return errorStatus(value.cause, seen)
+}
 /**
  * True when an error represents a transient network or model-provider failure: an HTTP 408, 429, or 5xx status, or a
  * connection that was refused, reset, timed out, or could not resolve its host.
  */
 export function transient(error: unknown): boolean {
-  const status = (error as { status?: unknown } | undefined)?.status
+  const status = errorStatus(error)
   if (typeof status === 'number') return status === 408 || status === 429 || status >= 500
   const text = error instanceof Error ? `${error.name} ${error.message} ${String((error as { code?: unknown }).code ?? '')}` : String(error)
   return PASSING.test(text)
@@ -72,6 +81,12 @@ export interface ExecutorHost {
   readonly lifetime: AbortSignal
   /** Session manager for worker sessions and for relaying worker reports to the main Session. */
   readonly sessions: Pick<Sessions, 'ensure' | 'prompt' | 'promptedId' | 'relay' | 'holds'>
+  /** Optional research-specific route selected by the scheduler for a newly-created local worker Session. */
+  readonly researchProfile?: (ticket: Ticket) => RoleModel | undefined
+  /** Optional local-research capacity override for an enabled schedule window. */
+  readonly researchCapacity?: () => number | undefined
+  /** Identifies tickets that belong to the local research slot pool. */
+  readonly researchTicket?: (ticket: Ticket) => boolean
   closing(): boolean
   /** Whether processing is paused, which holds launches and input deliveries. */
   paused(): boolean
@@ -177,13 +192,24 @@ export class WorkerSlots {
    * @param running - Returns the ticket IDs whose worker holds a slot (see `DshExecutor.running`).
    * @param max - Returns the configured maximum number of concurrent worker slots.
    */
-  constructor(private readonly running: () => string[], private readonly max: () => number) {}
+  constructor(private readonly running: () => string[], private readonly max: () => number,
+    private readonly groupOf: (ticketId: string) => 'general' | 'research' = () => 'general',
+    private readonly researchMax: () => number | undefined = () => undefined) {}
+  private groupIds(group: 'general' | 'research'): Set<string> {
+    return new Set([...this.running(), ...this.starting.keys()].filter(ticketId => this.groupOf(ticketId) === group))
+  }
+  private totalMax(): number {
+    return Math.max(this.max(), this.researchMax?.() ?? 0)
+  }
+  private groupMax(group: 'general' | 'research'): number {
+    return group === 'research' ? (this.researchMax?.() ?? this.max()) : this.max()
+  }
   /** Number of slots currently in use across running workers and starting reservations. */
   used(): number { return new Set([...this.running(), ...this.starting.keys()]).size }
   /** How many launches may run concurrently: the slots not held by a running worker or a wake reservation. */
   launches(): number {
     const wakes = [...this.starting].flatMap(([ticketId, by]) => by !== 'launch' ? [ticketId] : [])
-    return this.max() - new Set([...this.running(), ...wakes]).size
+    return this.totalMax() - new Set([...this.running(), ...wakes]).size
   }
   /**
    * Reserves a startup slot for `ticketId`; idempotent if `ticketId` already holds a starting slot.
@@ -193,7 +219,10 @@ export class WorkerSlots {
    */
   reserve(ticketId: string, by: 'launch' | 'wake' | 'person'): void {
     if (this.starting.has(ticketId)) return
-    if (this.used() >= this.max() + (by === 'person' ? 1 : 0)) throw new Later('No worker slot is free')
+    const group = this.groupOf(ticketId), extra = by === 'person' ? 1 : 0
+    if (this.used() >= this.totalMax() + extra || this.groupIds(group).size >= this.groupMax(group) + extra) {
+      throw new Later('No worker slot is free')
+    }
     this.starting.set(ticketId, by)
   }
   /** Releases `ticketId`'s starting slot once its worker session is running or the launch/wake attempt has ended. */
@@ -228,8 +257,12 @@ export class DshExecutor implements Executor {
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
   /** Registers the `launch` and `delivery` effect handlers; both are held (concurrency limit 0) while processing is paused. */
   constructor(private readonly host: ExecutorHost) {
-    this.slots = new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
-      () => host.store.settings().executor.maxWorkers)
+    this.slots = new WorkerSlots(
+      () => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
+      () => host.store.settings().executor.maxWorkers,
+      ticketId => host.researchTicket?.(host.store.tickets.get(ticketId)!) ? 'research' : 'general',
+      () => host.researchCapacity?.(),
+    )
     // Each launch reserves a worker slot so launches run concurrently while slots are free.
     host.effects.handle('launch', payload => this.launchQueued(payload), { limit: () => host.paused() ? 0 : this.slots.launches(),
       retry: [5000, 300_000] })
@@ -444,7 +477,7 @@ export class DshExecutor implements Executor {
     }
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
-    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
+    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', this.host.researchProfile?.(ticket))
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
     await this.stopped(ticket.id)

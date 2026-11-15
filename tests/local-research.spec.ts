@@ -131,9 +131,13 @@ async function idleWorker(h: Host, sessionId: string) {
   await new Promise(resolve => setTimeout(resolve, 5))
   await h.runtime.idle()
 }
-async function continuousWorker(root: string, options: { stateDir?: string; keepState?: boolean } = {}) {
-  host = await startRuntime(undefined, { workspace: root, ...options })
+async function continuousWorker(root: string, options: { stateDir?: string; keepState?: boolean; timeoutSeconds?: number } = {}) {
+  const { timeoutSeconds, ...runtimeOptions } = options
+  host = await startRuntime(undefined, { workspace: root, ...runtimeOptions })
   const h = host
+  if (timeoutSeconds !== undefined) h.runtime.store.saveSettings({ ...h.runtime.store.settings(), research: { schedules: [
+    { id: 'test-timeout', name: 'Test timeout', timezone: 'UTC', start: '00:00', end: '00:00', maxWorkers: 1, model: null, timeoutSeconds },
+  ] } })
   expect((await h.api('POST', 'research/continuous', { enabled: true })).status).toBe(200)
   await h.runtime.idle()
   const ticket = h.runtime.store.tickets.open()[0]!, sessionId = `worker-${ticket.id}`
@@ -189,6 +193,64 @@ it('autonomously advances from changed knowledge to the next question without a 
   expect(notes()).toHaveLength(2)
   expect(h.runtime.research!.view().messages).toHaveLength(1)
   expect(h.controller.prompt).not.toHaveBeenCalled()
+})
+
+it('applies the active research schedule route before each persistent worker round', async () => {
+  const root = workspace()
+  host = await startRuntime(undefined, { workspace: root })
+  const h = host
+  h.runtime.store.saveSettings({ ...h.runtime.store.settings(), research: { schedules: [
+    { id: 'night', name: 'Night', timezone: 'UTC', start: '00:00', end: '00:00', maxWorkers: 1,
+      model: { provider: 'night-provider', model: 'night-model' }, timeoutSeconds: null },
+  ] } })
+  expect((await h.api('POST', 'research/continuous', { enabled: true })).status).toBe(200)
+  await h.runtime.idle()
+  const ticket = h.runtime.store.tickets.open()[0]!, sessionId = `worker-${ticket.id}`
+  await h.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: '确认接管常驻研究职责。', reply_to_trigger_id: ticket.origin.triggerId })
+  await idleWorker(h, sessionId); await h.runtime.pump(); await h.runtime.idle()
+  expect(h.controller.selectForNextRequest).toHaveBeenCalledWith(h.agents.get(sessionId), { provider: 'night-provider', model: 'night-model' })
+})
+
+it('runs independent research lanes during a special window and isolates their artifacts', async () => {
+  const root = workspace()
+  host = await startRuntime(undefined, { workspace: root })
+  const h = host
+  h.runtime.store.saveSettings({ ...h.runtime.store.settings(), research: { schedules: [
+    { id: 'night', name: 'Night', timezone: 'UTC', start: '00:00', end: '00:00', maxWorkers: 3, model: null, timeoutSeconds: null },
+  ] } })
+  expect((await h.api('POST', 'research/continuous', { enabled: true })).status).toBe(200)
+  await h.runtime.idle()
+  const primary = h.runtime.store.tickets.open().find(ticket => h.runtime.store.triggers.get(ticket.origin.triggerId)?.meta.kind !== 'autonomous')!, primarySession = `worker-${primary.id}`
+  await h.runTool(primarySession, 'orchestrator_report', { state: 'ready', summary: '确认接管常驻研究职责。', reply_to_trigger_id: primary.origin.triggerId })
+  await idleWorker(h, primarySession); await h.runtime.pump(); await h.runtime.idle()
+  const first = checkpoint(h, root)
+  first.next = [
+    { ...first.next[0]!, id: 'lane-a', question: '检查入口 A 的认证边界。' },
+    { ...first.next[0]!, id: 'lane-b', question: '检查入口 B 的认证边界。' },
+  ] as unknown as typeof first.next
+  await h.runTool(primarySession, 'orchestrator_research_checkpoint', first)
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 11_000)
+  for (const worker of h.runtime.research!.continuous.view().workers) {
+    const agent = h.agents.get(`worker-${worker.ticketId}`)
+    if (agent && agent.status !== 'idle') { agent.status = 'idle'; h.ctx.emit('agent/status', { agent, status: 'idle' } as never) }
+  }
+  await h.runtime.pump(); await h.runtime.idle()
+  const view = h.runtime.research!.continuous.view()
+  expect(view.capacity).toBe(3)
+  expect(view.activeRounds).toHaveLength(2)
+  expect(new Set(view.activeRounds.map(round => round.ticketId)).size).toBe(2)
+  const extra = view.activeRounds.find(round => round.ticketId !== primary.id)!
+  const extraRound = extra.id
+  writeFileSync(join(root, 'research/rounds', extraRound, 'lane.md'), '独立并发研究产物。\n')
+  const extraSession = `worker-${extra.ticketId}`
+  await expect(h.runTool(extraSession, 'orchestrator_research_checkpoint', {
+    round_id: extraRound, summary: '记录并发 lane 的独立证据。', outcome: 'continue', artifacts: ['knowledge/mechanisms/identity.md'],
+    evidence: [{ source: 'main', path: 'auth.c', line: 1, claim: '并发 lane 使用同一锁定源码版本。' }], next: [first.next[0]!],
+  })).rejects.toThrow('Concurrent research lanes')
+  await h.runTool(extraSession, 'orchestrator_research_checkpoint', {
+    round_id: extraRound, summary: '记录并发 lane 的独立证据。', outcome: 'continue', artifacts: [`research/rounds/${extraRound}/lane.md`],
+    evidence: [{ source: 'main', path: 'auth.c', line: 1, claim: '并发 lane 使用同一锁定源码版本。' }], next: [first.next[0]!],
+  })
 })
 
 it('rejects missing, escaping, unchanged and unreferenced knowledge rather than claiming progress', async () => {
@@ -248,8 +310,8 @@ it('pauses future rounds, respects global pause, and blocks on source drift', as
   expect((await h.api('POST', 'research/continuous', { enabled: false })).status).toBe(200)
 })
 
-it('bounds an active round and refuses an idle loop without checkpoints', async () => {
-  const root = workspace(), { h, sessionId } = await continuousWorker(root)
+it('bounds an explicitly timed active round and refuses an idle loop without checkpoints', async () => {
+  const root = workspace(), { h, sessionId } = await continuousWorker(root, { timeoutSeconds: 900 })
   const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 11_000)
   for (let i = 0; i < 3; i++) {
     await idleWorker(h, sessionId)
@@ -262,7 +324,7 @@ it('bounds an active round and refuses an idle loop without checkpoints', async 
   await h.runtime.pump(); await h.runtime.idle()
   clock.mockReturnValue(Date.now() + 16 * 60_000)
   await h.runtime.pump(); await h.runtime.idle()
-  expect(h.runtime.research!.continuous.view().error).toContain('15 minutes')
+  expect(h.runtime.research!.continuous.view().error).toContain('configured time limit')
   expect(h.agents.get(sessionId)!.cancel).toHaveBeenCalled()
 })
 

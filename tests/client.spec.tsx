@@ -120,6 +120,31 @@ it('polls one request at a time, keeps the data while new dependencies load, and
   vi.useRealTimers()
 })
 
+it('backs off failed polls so repeated 502 or rate-limit responses do not create a hot retry loop', async () => {
+  vi.useFakeTimers()
+  const calls: { fail: (error: Error) => void }[] = []
+  function Harness() {
+    usePoll(() => new Promise<string>((_resolve, reject) => { calls.push({ fail: reject }) }), [], 1000)
+    return null
+  }
+  const container = document.createElement('div')
+  const root = createRoot(container)
+  await act(async () => { root.render(<Harness />) })
+  expect(calls).toHaveLength(1)
+  await act(async () => { calls[0]!.fail(new Error('502')) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(1999) })
+  expect(calls).toHaveLength(1)
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(calls).toHaveLength(2)
+  await act(async () => { calls[1]!.fail(new Error('rate limited')) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(3999) })
+  expect(calls).toHaveLength(2)
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(calls).toHaveLength(3)
+  act(() => { root.unmount() })
+  vi.useRealTimers()
+})
+
 it('tells a dsh-superagent that does not answer from a record it does not have, and words each failure by what failed', async () => {
   const messages = { offline: 'offline', notRunning: 'not running', serverError: (status: number) => `server ${status}`,
     requestFailed: (status: number) => `request ${status}`, setup: () => 'setup', user: ({ code }: { code: string }) => `user ${code}` }
@@ -142,4 +167,8 @@ it('tells a dsh-superagent that does not answer from a record it does not have, 
     status: 400, missing: false, unreachable: false })
   expect(await failure(async () => Response.json({ error: 'Unknown ticket', code: 'unknownTicket' }, { status: 404 }))).toEqual({
     message: 'user unknownTicket', status: 404, missing: true, unreachable: false })
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'rate limited' }), { status: 429,
+    headers: { 'content-type': 'application/json', 'retry-after': '7' } })))
+  const rateLimit = await call('GET tickets/:id', { id: 't1' }).catch(error => error as ApiError) as ApiError
+  expect((rateLimit.details as { retryAfterMs?: number }).retryAfterMs).toBe(7000)
 })

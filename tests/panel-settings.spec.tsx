@@ -128,7 +128,7 @@ it('lists the settings groups stages first, opens each stage\'s group from its s
   async () => {
   await mount()
   await click(tab(zh['tab.settings']))
-  expect(all('.dt-settings-link').map(link => link.textContent)).toEqual(['来源', '评估', '执行', '提示词', '部署'])
+  expect(all('.dt-settings-link').map(link => link.textContent)).toEqual(['来源', '评估', '执行', '研究调度', '提示词', '部署'])
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['term.source'])
   for (const [tab, group] of [['来源', '来源'], ['评估', '评估'], ['执行', '执行']] as const) {
     await click(find(tab, '[role="tab"]'))
@@ -144,4 +144,27 @@ it('lists the settings groups stages first, opens each stage\'s group from its s
   await remount()
   await click(tab(zh['tab.settings']))
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['promptPart.runtime/work'])
+})
+
+it('shows a model catalog failure on research scheduling instead of silently presenting an empty selector', async () => {
+  server.modelsError = 'upstream model catalog returned 502'
+  await mount()
+  await click(tab(zh['tab.settings']))
+  await click(zh['settingsGroup.research'])
+  expect(document.querySelector('.dt-error[role="alert"]')?.textContent).toContain('upstream model catalog returned 502')
+  expect(text()).toContain(zh.researchUseDefault)
+})
+
+it('keeps special schedule IDs unique after deleting a row and adding another', async () => {
+  await mount()
+  await click(tab(zh['tab.settings']))
+  await click(zh['settingsGroup.research'])
+  await click(zh.addResearchSchedule)
+  await click(zh.addResearchSchedule)
+  expect(all('.dt-card').filter(card => card.querySelector('.dt-card-title')?.textContent === zh.researchNewSchedule)).toHaveLength(2)
+  await click(find(zh.removeResearchSchedule))
+  await click(zh.addResearchSchedule)
+  await click(zh.save)
+  const ids = server.settings.research.schedules.map(item => item.id)
+  expect(new Set(ids).size).toBe(ids.length)
 })

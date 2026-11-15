@@ -47,6 +47,7 @@ import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
 import type { ResourceHost } from './resources.ts'
 import { mainTools, type MainToolsHost } from './tools/main.ts'
 import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
+import { activeResearchSchedule } from '../security/research-schedule.ts'
 
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
@@ -130,7 +131,20 @@ export class Runtime extends Service implements SourceHost {
         sourceHost: this, setup, requestPass: () => { this.passes.request() } })
       this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
         lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
-        repliedTo: trigger => repliedTo({ store, sources }, trigger) })
+        // A configured schedule must not silently raise the global executor
+        // limit while continuous research is paused. The override only
+        // applies to an enabled local research scheduler.
+        researchCapacity: () => runtime.research?.continuous.view().enabled
+          ? runtime.research.continuous.capacity() : undefined,
+        researchTicket: ticket => store.triggers.get(ticket.origin.triggerId)?.source === 'local',
+        repliedTo: trigger => repliedTo({ store, sources }, trigger), researchProfile: ticket => {
+          const trigger = store.triggers.get(ticket.origin.triggerId)
+          if (trigger?.source !== 'local') return undefined
+          const window = activeResearchSchedule(store.settings().research)
+          const model = window?.schedule.model
+          if (!model) return undefined
+          return model
+        } })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
         deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
@@ -215,6 +229,7 @@ export class Runtime extends Service implements SourceHost {
           store: this.store, prompts: this.prompts, engine: this.engine, receive: trigger => this.receive(trigger),
           idle: id => this.ctx.agents.get(workerSessionId(id) as SessionId)?.status === 'idle',
           cancel: id => { this.ctx.agents.get(workerSessionId(id) as SessionId)?.cancel({ kind: 'user' }, { keepInbox: true }) },
+          selectResearchModel: (sessionId, model) => this.sessions.selectNextModel(sessionId, model),
         })
       } catch (error) {
         this.setup.invalidate(new SetupError('localWorkspaceInvalid', { output: error instanceof Error ? error.message : String(error) }))

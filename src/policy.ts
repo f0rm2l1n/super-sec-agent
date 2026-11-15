@@ -85,6 +85,59 @@ export const EvalConfigSchema = z.object({
   timeoutSeconds: z.number().int().min(LIMITS.evalTimeoutSeconds.min).max(LIMITS.evalTimeoutSeconds.max).default(120),
   model: RoleModelSchema.nullable().default(null),
 }).strict()
+const TimeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm')
+const TimeZoneSchema = z.string().trim().min(1).max(80).superRefine((value, ctx) => {
+  try { new Intl.DateTimeFormat('en-CA', { timeZone: value }).format() }
+  catch { ctx.addIssue({ code: 'custom', message: 'Use an IANA timezone' }) }
+})
+export const ResearchRouteSchema = z.object({
+  provider: z.string().trim().min(1).max(120),
+  model: z.string().trim().min(1).max(160),
+  reasoningEffort: z.string().trim().min(1).max(80).optional(),
+}).strict()
+export const ResearchScheduleSchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9-]{0,39}$/),
+  name: z.string().trim().min(1).max(80),
+  timezone: TimeZoneSchema.default('Asia/Shanghai'),
+  start: TimeSchema,
+  end: TimeSchema,
+  maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max),
+  model: ResearchRouteSchema.nullable().default(null),
+  timeoutSeconds: z.number().int().min(30).max(3600).nullable().default(null),
+}).strict()
+export type ResearchSchedule = z.infer<typeof ResearchScheduleSchema>
+const ResearchConfigValueSchema = z.object({ schedules: z.array(ResearchScheduleSchema).max(24).default([]) }).strict().superRefine((value, ctx) => {
+  const ids = new Set<string>()
+  for (const item of value.schedules) {
+    if (ids.has(item.id)) ctx.addIssue({ code: 'custom', path: ['schedules'], message: `Duplicate schedule id: ${item.id}` })
+    ids.add(item.id)
+  }
+  // A host pass selects the first matching schedule. Reject same-timezone overlaps so
+  // saving the settings cannot silently depend on row order.
+  const segments = (start: string, end: string): [number, number][] => {
+    const toMinutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3))
+    const from = toMinutes(start), to = toMinutes(end)
+    return from === to ? [[0, 24 * 60]] : from < to ? [[from, to]] : [[from, 24 * 60], [0, to]]
+  }
+  const overlaps = (left: ResearchSchedule, right: ResearchSchedule) => left.timezone === right.timezone
+    && segments(left.start, left.end).some(([from, to]) => segments(right.start, right.end).some(([otherFrom, otherTo]) => from < otherTo && otherFrom < to))
+  for (let index = 0; index < value.schedules.length; index++) {
+    for (let other = index + 1; other < value.schedules.length; other++) {
+      if (overlaps(value.schedules[index]!, value.schedules[other]!)) {
+        ctx.addIssue({ code: 'custom', path: ['schedules'], message: `Overlapping schedules in ${value.schedules[index]!.timezone}: ${value.schedules[index]!.id} and ${value.schedules[other]!.id}` })
+      }
+    }
+  }
+})
+/** Accept the former config-level timezone once, then normalize it onto every schedule. */
+export const ResearchConfigSchema = z.preprocess(value => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const raw = value as { timezone?: unknown; schedules?: unknown[] }
+  const fallback = typeof raw.timezone === 'string' ? raw.timezone : 'Asia/Shanghai'
+  return { schedules: (raw.schedules ?? []).map(item => item && typeof item === 'object' && !Array.isArray(item)
+    ? { ...item, timezone: (item as { timezone?: unknown }).timezone ?? fallback } : item) }
+}, ResearchConfigValueSchema)
+export type ResearchConfig = z.infer<typeof ResearchConfigSchema>
 const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => name !== '.' && name !== '..', 'Not a command name')
   .refine(name => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(', ')} cannot be blocked`)
 /** Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command, and blocked commands. */
@@ -102,9 +155,10 @@ export const SettingsSchema = z.object({
   policy: PolicyConfigSchema.default(() => PolicyConfigSchema.parse({})),
   eval: EvalConfigSchema.default(() => EvalConfigSchema.parse({})),
   executor: ExecutorConfigSchema.default(() => ExecutorConfigSchema.parse({})),
+  research: ResearchConfigSchema.default(() => ResearchConfigSchema.parse({})),
 }).strict()
 export type Settings = z.infer<typeof SettingsSchema>
-export type SettingsBlock = 'policy' | 'eval' | 'executor' | `source:${string}`
+export type SettingsBlock = 'policy' | 'eval' | 'executor' | 'research' | `source:${string}`
 export type SettingsSave = SettingsBlock | 'pause'
 export type SettingsOrigin = 'panel' | 'tool' | 'sync'
 

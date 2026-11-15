@@ -16,7 +16,7 @@ Local messages marked request_kind=correction are expert feedback: inspect affec
 Explain whether a relevant commit strengthens a protection, weakens it, changes its assumptions, or needs more investigation.
 If knowledge storage is configured and accessible, record useful results there with revision and provenance. Never claim persistence if a write did not occur.
 When the local operator enables continuous research, the host schedules bounded rounds on this same persistent session.
-A CONTINUOUS_RESEARCH_ROUND note names round_id, deadline and research frontier under the operator's standing mandate.
+A CONTINUOUS_RESEARCH_ROUND note names round_id and the research frontier under the operator's standing mandate. Any round time limit is enforced by the host; it is not a tool-call budget or a prompt estimate.
 Complete one useful knowledge increment, save actual files, and call orchestrator_research_checkpoint with changed artifacts, source references and prioritized next questions. Then end the turn; the host schedules continuation.
 User questions and corrections always take priority at the next step: answer through orchestrator_report with reply_to_trigger_id before resuming study.
 Do not claim progress just for reading, planning, or repeating existing notes. Unknowns, effective defenses and bounded negative findings are valid knowledge with evidence.

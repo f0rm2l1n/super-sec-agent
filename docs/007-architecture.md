@@ -338,6 +338,8 @@ This fork adds project-security profile generation. The remaining modules below 
 | `src/security/local-research.ts` | Bind a local workspace and expert profile, ingest durable questions/corrections and expose replies without GitHub |
 | `src/security/local-inbox.ts` | Consume only UUID-named Markdown files from the explicit local request/correction inboxes, atomically process them, quarantine malformed files and recover interrupted claims |
 | `src/client/research.tsx` | Local research form, message/reply history and persistent worker session links |
+| `src/client/research-settings.tsx` | Platform settings for research windows, worker capacity, model route selection and scheduling controls |
+| `src/security/research-schedule.ts` | Pure timezone-aware selection of the active research window |
 | `src/app/context.ts` | The built-in prompt text, read from `prompts/`, and the transcript entries Sessions read |
 | `src/app/skill-files.ts` | Packaged text: `promptFile`, which joins a file's one-sentence lines into paragraphs, and the bundled skills |
 | `src/app/sessions.ts` | Sessions |
@@ -447,6 +449,8 @@ This fork adds project-security profile generation. The remaining modules below 
 | `tests/security-profile.spec.ts` | Expert profile validation, prompt persistence and immutable target revision resolution |
 | `tests/security-workspace.spec.ts` | Multi-repository scope, relocation with retained knowledge, revision drift and source boundaries |
 | `tests/local-research.spec.ts` | Account-free startup, persistent local worker, questions/corrections/replies, restart recovery and workspace binding |
+| `tests/research-schedule.spec.ts` | Timezone-aware window boundaries and configurable research capacity |
+| `tests/research-runtime-schedule.spec.ts` | Runtime/API verification of schedule model selection, capacity changes and window transitions |
 | `tests/panel-research.spec.tsx` | Local research submission, error recovery, deduplicated retries and session navigation |
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |

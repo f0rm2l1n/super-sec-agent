@@ -3,7 +3,9 @@ export const LIMITS = {
   ruleName: 100,
   ruleInstruction: 2000,
   evalTimeoutSeconds: { min: 30, max: 600 },
-  maxWorkers: { min: 1, max: 16 },
+  // Validation guard, not a recommended operating point. Real capacity is
+  // still bounded by the configured provider and host.
+  maxWorkers: { min: 1, max: 256 },
   prepareCommand: 4000,
   promptMaxChars: { min: 1000, max: 1_000_000 },
   admissionContextMaxPages: { min: 1, max: 100 },

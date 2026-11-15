@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -44,9 +45,14 @@ it('requires the project token, then establishes a clean authenticated session',
   expect(grant.headers.get('location')).toBe('/')
   const cookie = grant.headers.get('set-cookie')?.split(';', 1)[0] || ''
   expect(cookie).toContain('superagent-access-')
-  const authenticated = await fetch(endpoint, { headers: { cookie } })
+  const browserCookieName = `dsh-auth-${createHash('sha256').update(`127.0.0.1:${backendPort}`).digest('base64url')}`
+  const staleBrowserCookie = `${browserCookieName}=v1.stale.invalid`
+  const authenticated = await fetch(endpoint, { headers: { cookie: `${staleBrowserCookie}; ${cookie}` } })
   expect(authenticated.status).toBe(200)
-  expect(await authenticated.text()).toContain('dsh-auth-')
+  const forwardedCookies = await authenticated.text()
+  expect(forwardedCookies).toContain('dsh-auth-')
+  expect(forwardedCookies).not.toContain('v1.stale.invalid')
+  expect(forwardedCookies.match(new RegExp(`${browserCookieName}=`, 'g'))).toHaveLength(1)
   const clientModules = await fetch(`${endpoint}plugins/??@deepseek-ai/dsh-client-modules/client.js&rev=test`, { headers: { cookie } })
   expect(clientModules.status).toBe(200)
   expect(await clientModules.text()).toContain('/plugins/??@deepseek-ai/dsh-client-modules/client.js&rev=test')

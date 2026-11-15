@@ -8,6 +8,7 @@ import type { Store, Receipt } from '../app/store.ts'
 import type { Prompts, PromptConfig } from '../app/prompts.ts'
 import { record } from '../kv.ts'
 import { SettingsSchema } from '../policy.ts'
+import type { RoleModel } from '../policy.ts'
 import type { SourceKind } from '../sources/kind.ts'
 import { checkWorkspace, createWorkspaceProfile } from './workspace.ts'
 import { LocalInbox } from './local-inbox.ts'
@@ -37,6 +38,7 @@ interface LocalHost {
   receive(trigger: Trigger): ReceiveResult
   idle(ticketId: string): boolean
   cancel(ticketId: string): void
+  selectResearchModel(sessionId: string, model: RoleModel | null): void
 }
 
 /** Local intake reuses Engine, durable Outbox and the persistent DSH worker session. */
@@ -76,6 +78,7 @@ export class LocalResearch {
     if (JSON.stringify(updated) !== JSON.stringify(settings)) host.store.saveSettings(updated)
     this.continuous = new ContinuousResearch(root, {
       store: host.store, engine: host.engine, validate: () => this.validate(), idle: host.idle, cancel: host.cancel,
+      selectModel: (ticketId, model) => host.selectResearchModel(`worker-${ticketId}`, model),
       sources: this.workspace.lock.sources.map(source => ({ ...source, path: config.sources.find(item => item.id === source.id)!.path })),
       ticket: () => this.ticket(),
       start: () => {
@@ -84,7 +87,46 @@ export class LocalResearch {
         this.send({ id: randomUUID(), kind: 'question', text: `启用持续项目安全研究：在 SCOPE.md 与锁定版本内，自主选择有高安全价值的问题，学习攻击面、防护机制和跨模块边界，持续沉淀有源码证据的知识；优先处理我的问题与订正。不修改目标源码、不做动态攻击或外部发布。请先确认接管这项常驻职责，用 orchestrator_report ready + reply_to_trigger_id 回复；具体研究轮次由宿主随后调度。此前有未明确标记答复的消息 ${JSON.stringify(pending)}；若已处理，请先各用 ready + reply_to_trigger_id 简要确认旧结果，勿重复调查。本授权开启新的常驻研究，之前首次连通性验收的单轮文件数限制不延续到新研究。` })
         return this.ticket()!
       },
+      startWorker: () => this.startAutonomousWorker(),
     })
+  }
+
+  /** Create an isolated Engine ticket for a concurrent autonomous lane.
+   *
+   * Each lane gets its own synthetic local thread so operator requests continue
+   * to the primary conversation only. The ticket still uses the same reviewed
+   * workspace and is subject to the same local authorization policy.
+   */
+  private startAutonomousWorker() {
+    const id = randomUUID()
+    const triggerId = `local:research:${id}`
+    const thread = `research:${this.workspace.config.id}:${id}`
+    const at = new Date().toISOString()
+    const trigger: Trigger = {
+      id: triggerId,
+      source: 'local',
+      threads: [{ source: 'local', id: thread }],
+      actor: { source: 'local', id: 'operator' },
+      human: true,
+      addressed: 'direct',
+      at,
+      text: '内部持续研究并发工作槽。',
+      channel: { source: 'local', thread, address: { request: triggerId } },
+      meta: { kind: 'autonomous', workspace: this.workspace.config.id },
+    }
+    let ticketId: string | undefined
+    this.host.store.atomic(() => {
+      this.host.store.triggers.save(trigger)
+      const decision = this.host.engine.decide(triggerId, {
+        kind: 'accept', title: `${this.workspace.config.name}：并发安全研究`,
+        scope: '研究工作区 SCOPE.md 所定义的项目安全；此为宿主调度的并发研究槽。',
+        reason: { code: 'explicitRouted' }, name: 'security-research-lane',
+      })
+      ticketId = decision.ticketId
+    })
+    const ticket = ticketId ? this.host.store.tickets.get(ticketId) : undefined
+    if (!ticket) throw new Error('Could not create an autonomous research worker')
+    return ticket
   }
 
   send(input: z.infer<typeof LocalMessageSchema>) {
@@ -131,8 +173,10 @@ export class LocalResearch {
   pollInbox() { return this.inbox.poll() }
 
   private ticket() {
-    return this.host.store.tickets.open().find(ticket =>
-      this.host.store.triggers.get(ticket.origin.triggerId)?.source === 'local')
+    return this.host.store.tickets.open().find(ticket => {
+      const trigger = this.host.store.triggers.get(ticket.origin.triggerId)
+      return trigger?.source === 'local' && trigger.meta.kind !== 'autonomous'
+    })
   }
   private validate() {
     const { root, config, lock } = this.workspace
@@ -148,14 +192,17 @@ export class LocalResearch {
   view() {
     const { root, config, lock } = this.workspace
     const requests = this.host.store.db.prepare(
-      "SELECT value FROM trigger WHERE value ->> '$.source' = 'local' ORDER BY rowid DESC LIMIT 100",
-    ).all().map(row => JSON.parse(String(row.value)) as Trigger).reverse()
+      "SELECT value FROM trigger WHERE value ->> '$.source' = 'local' ORDER BY rowid DESC LIMIT 300",
+    ).all().map(row => JSON.parse(String(row.value)) as Trigger)
+      .filter(request => request.meta.kind !== 'autonomous').slice(-100).reverse()
     const replies = this.host.store.db.prepare(
       "SELECT value FROM outbox WHERE value ->> '$.channel.source' = 'local' ORDER BY rowid DESC LIMIT 300",
     ).all().map(row => JSON.parse(String(row.value)) as Receipt).reverse()
     const tickets = this.host.store.tickets.open().filter(ticket =>
       this.host.store.triggers.get(ticket.origin.triggerId)?.source === 'local')
-    const attention = tickets.find(ticket => ticket.attention)?.attention
+    const attention = tickets.find(ticket => this.host.store.triggers.get(ticket.origin.triggerId)?.meta.kind !== 'autonomous' && ticket.attention)?.attention
+    const primaryTicketId = this.continuous.view().workers?.[0]?.ticketId
+    const orderedTickets = [...tickets].sort((left, right) => Number(right.id === primaryTicketId) - Number(left.id === primaryTicketId))
     return { id: config.id, name: config.name, workspace: root, continuous: this.continuous.view(),
       attention: attention ? { question: attention.question, triggerId: attention.triggerId } : null,
       inbox: this.inbox.view(),
@@ -165,7 +212,7 @@ export class LocalResearch {
         replies: replies.filter(reply => reply.channel.address.request === request.id)
           .map(({ id, text, status, kind }) => ({ id, text, status, kind })),
       })),
-      sessions: tickets.map(ticket => ({ ticketId: ticket.id, sessionId: `worker-${ticket.id}`, title: ticket.title })),
+      sessions: orderedTickets.map(ticket => ({ ticketId: ticket.id, sessionId: `worker-${ticket.id}`, title: ticket.title })),
     }
   }
 }

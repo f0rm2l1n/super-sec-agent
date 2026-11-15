@@ -15,7 +15,7 @@ export interface UserFailure { code: UserErrorCode; values: Record<string, strin
  */
 export class ApiError extends Error {
   constructor(message: string, readonly status: number,
-    readonly details: { issues?: { path: string; message: string }[]; setup?: SetupProblem; user?: UserFailure; unreachable?: boolean } = {}) {
+    readonly details: { issues?: { path: string; message: string }[]; setup?: SetupProblem; user?: UserFailure; unreachable?: boolean; retryAfterMs?: number } = {}) {
     super(message)
   }
   get issues() { return this.details.issues ?? [] }
@@ -48,16 +48,22 @@ async function api<T>(messages: ApiMessages, path: string, method: string, body?
     const user = isUserError(failure.code) ? { code: failure.code, values: failure.values ?? {} } : undefined
     // dsh-superagent always responds with a body; an empty 404 comes from the DSH web server when dsh-superagent routes are unmounted during startup or restart.
     const { status } = response
+    const retryHeader = response.headers.get('retry-after')
+    const retryNumber = retryHeader ? Number(retryHeader) : NaN
+    const retryDate = retryHeader ? Date.parse(retryHeader) : NaN
+    const retryAfterMs = Number.isFinite(retryNumber) ? Math.max(0, retryNumber * 1000)
+      : Number.isFinite(retryDate) ? Math.max(0, retryDate - Date.now()) : undefined
     const message = failure.setup ? messages.setup(failure.setup) : user ? messages.user(user)
       : typeof failure.error === 'string' ? failure.error : !text && status === 404 ? messages.notRunning
       : status >= 500 ? messages.serverError(status) : messages.requestFailed(status)
     throw new ApiError(message, status, { issues, ...failure.setup ? { setup: failure.setup } : {}, ...user ? { user } : {},
-      ...text ? {} : { unreachable: true } })
+      ...text ? {} : { unreachable: true }, ...retryAfterMs !== undefined ? { retryAfterMs } : {} })
   }
   return value as T
 }
 
 const HIDDEN_FACTOR = 6
+const ERROR_BACKOFF_STEPS = 3
 const same = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b)
 /**
  * Poll an endpoint while mounted, backing off when the document is hidden.
@@ -72,17 +78,30 @@ export function usePoll<T>(load: () => Promise<T>, deps: readonly unknown[], int
   useEffect(() => {
     let active = true
     let timer: ReturnType<typeof setTimeout> | undefined
+    let failures = 0
+    let retryAfterMs: number | undefined
     // Serialize requests so a manual reload after a mutation runs after the current poll finishes.
     let queue = Promise.resolve()
     const once = async () => {
       clearTimeout(timer)
       try {
         const value = await loader.current()
+        failures = 0
+        retryAfterMs = undefined
         if (active) setState(previous => same(previous.data, value) ? previous.error ? { data: previous.data as T } : previous : { data: value })
       } catch (failure) {
+        // DSH's empty 404 is the normal "routes are not mounted during a
+        // restart" signal; keep checking it at the normal cadence so the UI
+        // recovers as soon as the service answers again. Back off provider
+        // overloads and transport failures, which are the cases that can
+        // otherwise create a retry storm.
+        const transient = !(failure instanceof ApiError)
+          || failure.status === 408 || failure.status === 429 || failure.status >= 500
+        failures = transient ? Math.min(failures + 1, ERROR_BACKOFF_STEPS) : 0
+        retryAfterMs = failure instanceof ApiError ? failure.details.retryAfterMs : undefined
         if (active) setState(previous => ({ ...previous, error: failure instanceof Error ? failure : new Error(String(failure)) }))
       } finally {
-        if (active) timer = setTimeout(run, document.hidden ? intervalMs * HIDDEN_FACTOR : intervalMs)
+        if (active) timer = setTimeout(run, Math.max(intervalMs * (document.hidden ? HIDDEN_FACTOR : 1) * 2 ** failures, retryAfterMs ?? 0))
       }
     }
     const run = () => (queue = queue.then(once))

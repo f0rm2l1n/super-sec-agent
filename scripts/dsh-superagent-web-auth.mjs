@@ -98,7 +98,17 @@ function sessionCookie() {
 
 function headersForBackend(headers) {
   const output = { ...headers, host: backendAuthority }
-  output.cookie = output.cookie ? `${output.cookie}; ${sessionCookie()}` : sessionCookie()
+  // Browsers can retain a cookie minted by another DSH process that used the
+  // same loopback authority (for example, a normal DSH session on the host).
+  // DSH's cookie parser intentionally uses the first matching cookie, so
+  // appending our valid grant after a stale value would still produce a 401.
+  // Remove the authority-bound DSH cookie before adding this isolated process'
+  // freshly signed grant.
+  const existingCookies = String(output.cookie || '')
+    .split(';')
+    .map(value => value.trim())
+    .filter(value => value && !value.startsWith(`${browserCookieName}=`))
+  output.cookie = [...existingCookies, sessionCookie()].join('; ')
   if (output.origin) output.origin = `http://${backendAuthority}`
   delete output.authorization
   delete output['content-length']
