@@ -31,7 +31,7 @@ for platform in "$@"; do
     --file "$ROOT/deploy/Dockerfile" \
     "$ROOT"
   docker save "$image" | gzip -1 > "$archive"
-  sha256sum "$archive" > "$archive.sha256"
+  (cd "$(dirname "$archive")" && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
   docker image inspect "$image" --format '{"image":"{{.RepoTags}}","id":"{{.Id}}","os":"{{.Os}}","architecture":"{{.Architecture}}"}' > "$metadata"
   printf '%s\n' "Wrote $archive"
 done
