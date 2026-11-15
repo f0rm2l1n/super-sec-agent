@@ -27,6 +27,10 @@ services:
       DSH_SUPERAGENT_BACKEND_PORT: 3182
       DSH_SUPERAGENT_WEB_HOST: 0.0.0.0
       DSH_SUPERAGENT_WEB_PORT: 3184
+      DSH_SUPERAGENT_WEB_ADVERTISE_HOST: ${SUPERAGENT_WEB_ADVERTISE_HOST:-127.0.0.1}
+      # If a custom key is supplied, this must be a path visible inside the
+      # container. The default is empty so the persistent mounted key is
+      # generated automatically on first start.
       SUPERAGENT_SSH_KEY_FILE: ${SUPERAGENT_SSH_KEY_FILE:-}
       SUPERAGENT_SSH_STRICT_HOST_KEY_CHECKING: ${SUPERAGENT_SSH_STRICT_HOST_KEY_CHECKING:-accept-new}
       # Optional complete DSH patch supplied by the operator. Model/provider

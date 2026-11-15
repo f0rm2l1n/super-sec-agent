@@ -16,6 +16,8 @@ import { URL } from 'node:url'
 
 const publicHost = process.env.DSH_SUPERAGENT_WEB_HOST || '127.0.0.1'
 const publicPort = Number(process.env.DSH_SUPERAGENT_WEB_PORT || 3184)
+const advertisedHost = process.env.DSH_SUPERAGENT_WEB_ADVERTISE_HOST
+  || (publicHost === '0.0.0.0' || publicHost === '::' ? '127.0.0.1' : publicHost)
 const backendHost = process.env.DSH_SUPERAGENT_BACKEND_HOST || '127.0.0.1'
 const backendPort = Number(process.env.DSH_SUPERAGENT_BACKEND_PORT || 3182)
 const backendAuthority = `${backendHost}:${backendPort}`
@@ -169,6 +171,6 @@ server.on('upgrade', (request, clientSocket, head) => {
 
 server.listen(publicPort, publicHost, () => {
   const token = process.env.DSH_SUPERAGENT_ACCESS_TOKEN ? '<provided by environment>' : projectToken
-  console.log(`Superagent-sec authenticated web: http://${publicHost}:${publicPort}/?token=${token}`)
+  console.log(`Superagent-sec authenticated web: http://${advertisedHost}:${publicPort}/?token=${token}`)
   console.log(`Token file: ${tokenFile}`)
 })

@@ -79,6 +79,8 @@ install -m 600 /dev/null /srv/superagent-sec/runtime/tinyproxy/external.env
 
 如果使用完整的外部 patch，设置 `SUPERAGENT_DSH_PATCH_FILE=/run/superagent/dsh.patch.yml`；对应的 host 文件由 `SUPERAGENT_DSH_PATCH_HOST_FILE` 只读挂载。未设置外部 patch 时，入口脚本会把 DSH 首次生成的空 patch（`[]`）替换为隔离 web、state、workspace 的默认 patch。模型/provider 仍由 DSH 全局设置或外部 patch 管理，部署脚本不会写死任何模型。
 
+若使用完整外部 patch，先确保 host 文件已经存在且权限为 600：`install -m 600 /path/to/patch.yml /srv/superagent-sec/runtime/tinyproxy/dsh.patch.yml`。自定义 `SUPERAGENT_SSH_KEY_FILE` 只能填写容器内可见的路径；默认留空，由持久化 `secrets/ssh` 自动生成 key。
+
 从 Release 下载后先校验并导入对应架构：
 
 ```sh
@@ -123,5 +125,7 @@ Compose 默认以容器 root 运行，以保证 DSH、工具链和目标工作�
 ./scripts/superagent status
 curl --noproxy '*' -H 'x-orchestrator-request: 1' http://127.0.0.1:3182/orchestrator/api/state
 ```
+
+上面是本机脚本模式的后端检查。Compose 模式只发布带 token 的 3184 网关，使用 `docker compose ... exec -T superagent-sec curl --fail -H 'x-orchestrator-request: 1' http://127.0.0.1:3182/orchestrator/api/state`，或打开容器日志中打印的已认证 URL；URL 中的主机名由 `SUPERAGENT_WEB_ADVERTISE_HOST` 控制，默认是 `127.0.0.1`。
 
 面板打开后，先确认项目工作区和来源基线，再提交一个具体问题；需要长期研究时在 Superagent-sec 页面启动持续研究。
