@@ -206,6 +206,23 @@ export class ContinuousResearch {
     const state = this.state()
     if (enabled && (!state.enabled || !!state.error)) {
       const primary = this.ensurePrimary(state)
+      const resumableBlockers = new Set(state.candidates.filter(candidate => candidate.status === 'blocked' && candidate.blocker)
+        .map(candidate => candidate.blocker!))
+      const requeueBlocked = !state.candidates.some(candidate => candidate.status === 'open')
+      if (requeueBlocked) {
+        // An explicit Start/resume is the operator's acknowledgement that a
+        // previously blocked frontier may be attempted again. Reopen it only
+        // when there is no independent open work, preserving the normal
+        // candidate-level isolation during autonomous scheduling.
+        state.candidates = state.candidates.map(candidate => candidate.status === 'blocked'
+          ? { ...candidate, status: 'open' as const, blocker: undefined } : candidate)
+        for (const worker of state.workers) {
+          const ticket = this.host.store.tickets.get(worker.ticketId)
+          if (ticket && liveTicket(ticket) && ticket.attention?.question && resumableBlockers.has(ticket.attention.question)) {
+            this.host.engine.report(ticket.id, { state: 'progress', summary: '研究恢复：重新排队此前阻塞的研究前沿。', question: null })
+          }
+        }
+      }
       const current = this.host.store.tickets.get(primary.ticketId)
       if (current && canRetry(current)) this.host.engine.retryTicket(current.id)
       for (const worker of state.workers) {

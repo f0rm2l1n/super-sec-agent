@@ -227,6 +227,28 @@ it('refreshes the research frontier after exhaustion and keeps real blockers sto
   expect(h.runtime.research!.continuous.view()).toMatchObject({ status: 'blocked', error: '当前研究前沿已耗尽，需要新的项目证据或人工授权。' })
 })
 
+it('explicit resume requeues a blocked frontier when no other work remains', async () => {
+  const root = workspace(), { h, sessionId } = await continuousWorker(root)
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
+    round_id: h.runtime.research!.continuous.view().active!.id, summary: '当前方向暂时收敛，先安排一次前沿扫描。', outcome: 'exhausted', artifacts: [], evidence: [], next: [],
+  })
+  await idleWorker(h, sessionId)
+  const now = Date.now()
+  vi.spyOn(Date, 'now').mockReturnValue(now + 11_000)
+  await h.runtime.pump(); await h.runtime.idle()
+  const refresh = h.runtime.research!.continuous.view().active!
+  expect(refresh.question).toBe('重新扫描已完成研究与未决问题，提出一个未重复且可用项目证据验证的新方向。')
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
+    round_id: refresh.id, summary: '前沿扫描也需要操作者授权。', outcome: 'blocked', artifacts: [], evidence: [], next: [],
+    blocker: '需要操作者授权隔离环境中的动态连接跟踪。',
+  })
+  expect(h.runtime.research!.continuous.view().candidates).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'blocked' })]))
+  await h.api('POST', 'research/continuous', { enabled: false })
+  await h.api('POST', 'research/continuous', { enabled: true })
+  const view = h.runtime.research!.continuous.view()
+  expect(view.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'open', question: refresh.question })]))
+})
+
 it('keeps an explicit research prerequisite visible while leaving other frontier work eligible', async () => {
   const root = workspace(), { h, sessionId } = await continuousWorker(root)
   const next = { question: '继续检查另一个独立的授权边界。', rationale: '该边界不依赖当前等待授权的动态实验。',
