@@ -119,6 +119,15 @@ Compose 默认以容器 root 运行，以保证 DSH、工具链和目标工作�
 
 默认前端只绑定宿主机回环地址。远程访问必须使用 SSH tunnel 或已认证的 TLS 反向代理；不要直接暴露后端 3182，也不要把 token 提交到 Git。
 
+如果确实需要让同一内网的其他机器直接访问，可在 `deploy/.env` 中改为：
+
+```env
+SUPERAGENT_BIND_HOST=0.0.0.0
+SUPERAGENT_WEB_ADVERTISE_HOST=192.168.1.20
+```
+
+其中 `192.168.1.20` 换成部署主机在内网中的实际 IP；不要把 `SUPERAGENT_WEB_ADVERTISE_HOST` 设成 `0.0.0.0`，它不是可用于浏览器的目标地址。重新执行 `docker compose ... up -d` 后，从另一台内网机器打开 `http://192.168.1.20:3184/?token=...`。同时只在内网防火墙放行 3184，后端 3182 仍保持不发布；如果不需要局域网直连，继续使用默认的 `127.0.0.1` 和 SSH tunnel。
+
 ## 并发与模型使用边界
 
 持续研究仍是**单项目实例**，但特殊时间窗可以配置多个独立 research lane。每个 lane 是独立的 Engine Ticket、DSH worker Session 和 round ID；宿主按当前时间窗的 `maxWorkers` 创建 lane，日常没有特殊时间窗时默认只运行一个 lane。全局 `executor.maxWorkers` 是普通工单池上限；研究调度的 `maxWorkers` 是研究池上限（当前可配置 1–256），并通过总容量门控，避免研究并发把普通工单池偷偷扩大。
