@@ -97,7 +97,9 @@ if [ -n "$external_patch" ]; then
     exit 1
   fi
   cp "$external_patch" "$profile_dir/cordis.patch.yml"
-elif [ ! -f "$profile_dir/cordis.patch.yml" ] || grep -q '# superagent-sec managed runtime patch v1' "$profile_dir/cordis.patch.yml"; then
+elif [ ! -f "$profile_dir/cordis.patch.yml" ] \
+  || grep -q '# superagent-sec managed runtime patch v1' "$profile_dir/cordis.patch.yml" \
+  || grep -Eq '^[[:space:]]*\[[[:space:]]*\][[:space:]]*$' "$profile_dir/cordis.patch.yml"; then
   cat > "$profile_dir/cordis.patch.yml" <<EOF
 # superagent-sec managed runtime patch v1
 - id: webserver
