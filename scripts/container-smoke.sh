@@ -22,6 +22,7 @@ docker run --rm --platform "$PLATFORM" --entrypoint sh "$APP_IMAGE" -eu -c '
   test -f /opt/superagent-sec/package.json
   test -d /opt/superagent-sec/node_modules
   test -f /opt/superagent-sec/lib/index.js
+  grep -q "superagent-sec managed runtime patch v1" /usr/local/bin/superagent-entrypoint
   test ! -e /workspace/superagent-source
   test ! -e /workspace/super-sec-agent
   for tool in bash git ssh rg python3 jq curl file strings readelf eu-readelf sqlite3 unzip zip xz zstd strace ltrace; do
