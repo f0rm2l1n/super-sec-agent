@@ -24,7 +24,9 @@ services:
       DSH_SUPERAGENT_WEB_PORT: 3184
       SUPERAGENT_SSH_KEY_FILE: ${SUPERAGENT_SSH_KEY_FILE:-}
       SUPERAGENT_SSH_STRICT_HOST_KEY_CHECKING: ${SUPERAGENT_SSH_STRICT_HOST_KEY_CHECKING:-accept-new}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY in the runtime environment}
+      # Optional complete DSH patch supplied by the operator. Model/provider
+      # settings belong to that external patch or to DSH global settings.
+      SUPERAGENT_DSH_PATCH_FILE: ${SUPERAGENT_DSH_PATCH_FILE:-}
       HTTP_PROXY: ${SUPERAGENT_HTTP_PROXY:-}
       HTTPS_PROXY: ${SUPERAGENT_HTTPS_PROXY:-}
       ALL_PROXY: ${SUPERAGENT_ALL_PROXY:-}
@@ -40,6 +42,9 @@ services:
       - ${SUPERAGENT_DATA_DIR:-./.container-data}/state:/var/lib/superagent/state
       - ${SUPERAGENT_DATA_DIR:-./.container-data}/dsh-home:/var/lib/superagent/dsh-home
       - ${SUPERAGENT_DATA_DIR:-./.container-data}/secrets:/var/lib/superagent/secrets
+      # This path is used only when SUPERAGENT_DSH_PATCH_FILE points to
+      # /run/superagent/dsh.patch.yml inside the container.
+      - ${SUPERAGENT_DSH_PATCH_HOST_FILE:-./.container-data/dsh.patch.yml}:/run/superagent/dsh.patch.yml:ro
 
 volumes:
   superagent-node-modules:

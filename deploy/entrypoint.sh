@@ -9,6 +9,7 @@ projects_dir=${SUPERAGENT_PROJECTS_DIR:-/var/lib/superagent/projects}
 state_dir=${SUPERAGENT_STATE_DIR:-/var/lib/superagent/state}
 backend_port=${DSH_SUPERAGENT_BACKEND_PORT:-3182}
 token_file=${DSH_SUPERAGENT_ACCESS_TOKEN_FILE:-/var/lib/superagent/secrets/web-token}
+external_patch=${SUPERAGENT_DSH_PATCH_FILE:-}
 
 mkdir -p "$dsh_home" "$workspace" "$projects_dir" "$state_dir" "$(dirname "$token_file")"
 chmod 700 "$dsh_home" "$(dirname "$token_file")" 2>/dev/null || true
@@ -84,33 +85,15 @@ if [ ! -f "$profile_dir/.superagent-sec-installed" ]; then
   dsh plugin --profile "$profile" add "link:$app_dir"
   touch "$profile_dir/.superagent-sec-installed"
 fi
-if [ ! -f "$profile_dir/cordis.patch.yml" ] || ! grep -q 'id: dsh-superagent' "$profile_dir/cordis.patch.yml"; then
+if [ -n "$external_patch" ]; then
+  if [ ! -f "$external_patch" ]; then
+    echo "Configured DSH patch does not exist: $external_patch" >&2
+    exit 1
+  fi
+  cp "$external_patch" "$profile_dir/cordis.patch.yml"
+elif [ ! -f "$profile_dir/cordis.patch.yml" ] || grep -q '# superagent-sec managed runtime patch v1' "$profile_dir/cordis.patch.yml"; then
   cat > "$profile_dir/cordis.patch.yml" <<EOF
-- id: llm-pi-ai
-  config:
-    providers:
-      deepseek-direct:
-        displayName: DeepSeek Flash (direct API)
-        api: openai-completions
-        baseURL: ${SUPERAGENT_MODEL_BASE_URL:-https://api.deepseek.com/v1}
-        apiKeyEnv: DEEPSEEK_API_KEY
-        models:
-          - id: deepseek-flash
-            name: DeepSeek Flash
-            contextWindow: 1000000
-            maxTokens: 32768
-            input: [ text ]
-            reasoningEfforts: { off: null, high: high }
-        compat:
-          thinkingFormat: deepseek
-          supportsDeveloperRole: false
-          supportsStore: false
-          maxTokensField: max_tokens
-          requiresReasoningContentOnAssistantMessages: true
-- id: agent-default-model
-  config:
-    provider: deepseek-direct
-    model: deepseek-flash
+# superagent-sec managed runtime patch v1
 - id: webserver
   config:
     host: 127.0.0.1

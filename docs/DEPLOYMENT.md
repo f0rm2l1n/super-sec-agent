@@ -31,8 +31,8 @@ export DEEPSEEK_API_KEY='从 secret 注入，不写入文件'
 镜像只承担依赖和运行时的稳定层，不包含 Superagent-sec 的应用源码或 `lib/` 构建产物；项目 checkout、研究工作区和运行状态仍由 host 提供。Compose 启动时用 host checkout 构建当前 `lib/`，因此普通代码更新不需要重建镜像。镜像按 CPU 架构发布，不能把 arm64 镜像直接搬到 amd64 主机（反之亦然）。在可联网机器上执行下面的导出脚本：
 
 ```sh
-./scripts/export-docker-release.sh v0.1.0-sec.2
-ls -lh .artifacts/releases/v0.1.0-sec.2/
+./scripts/export-docker-release.sh v0.1.0-sec.3
+ls -lh .artifacts/releases/v0.1.0-sec.3/
 ```
 
 脚本会根据 Dockerfile 的锁定依赖层导出对应架构的 Docker archive，并为每个 archive 生成 `.sha256` 和构建元数据。当前内网使用 `SUPERAGENT_RELEASE_PLATFORMS=linux/amd64`。发布前应确认 checkout 干净，并把 commit SHA 记录在 Release 说明中。
@@ -41,11 +41,11 @@ ls -lh .artifacts/releases/v0.1.0-sec.2/
 
 ```sh
 git push origin feature/superagent-sec-deployment
-git tag v0.1.0-sec.2
-git push origin v0.1.0-sec.2
-gh release create v0.1.0-sec.2 .artifacts/releases/v0.1.0-sec.2/* \
-  --prerelease --title 'superagent-sec v0.1.0-sec.2' \
-  --notes-file docs/RELEASE-v0.1.0-sec.2.md
+git tag v0.1.0-sec.3
+git push origin v0.1.0-sec.3
+gh release create v0.1.0-sec.3 .artifacts/releases/v0.1.0-sec.3/* \
+  --prerelease --title 'superagent-sec v0.1.0-sec.3' \
+  --notes-file docs/RELEASE-v0.1.0-sec.3.md
 ```
 
 如果联网机器没有 `gh`，可在 GitHub 网页的该 tag Release 页面上传同一目录中的 `.tar.gz`、`.sha256` 和 `.json` 文件。不要把 API key、web token 或 `deploy/.env` 上传为 Release asset。
@@ -66,9 +66,9 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f
 从 Release 下载后先校验并导入对应架构：
 
 ```sh
-sha256sum -c superagent-sec-v0.1.0-sec.2-linux-amd64.tar.gz.sha256
-docker load < superagent-sec-v0.1.0-sec.2-linux-amd64.tar.gz
-sed -i 's/^SUPERAGENT_IMAGE_TAG=.*/SUPERAGENT_IMAGE_TAG=v0.1.0-sec.2-linux-amd64/' deploy/.env
+sha256sum -c superagent-sec-v0.1.0-sec.3-linux-amd64.tar.gz.sha256
+docker load < superagent-sec-v0.1.0-sec.3-linux-amd64.tar.gz
+sed -i 's/^SUPERAGENT_IMAGE_TAG=.*/SUPERAGENT_IMAGE_TAG=v0.1.0-sec.3-linux-amd64/' deploy/.env
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --no-build
 ```
 
@@ -96,7 +96,7 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --no-build
 
 持续研究的调度时区、时间段、研究 worker 数量、模型选择和单轮研究时限可在平台的“设置 → 研究调度”中修改，不需要编辑部署文件。默认调度不限单轮时限；只有特殊调度明确选择时限时，单轮研究时限才会从宿主投递本轮研究提案开始计时，并在 agent 提交检查点前由宿主看门狗执行。它不是模型 API 的请求 timeout，也不是 agent 的工具次数或 token 配额。每条调度拥有自己的时区，模型选择直接引用 DSH 全局设置中已经配置的 provider/model；API 地址、凭据和模型 token/采样参数不在 Superagent-sec 中复制维护。
 
-研究 round 创建时绑定当前时间段的模型选择；切换时间段不会中断已经运行的 round。上下文上限、输出上限和 temperature 统一由 DSH 全局模型设置负责，研究调度不重复覆盖。provider route 必须已由 DSH adapter 注册，API 地址和凭据的 wire-level 配置由 DSH 全局设置负责。
+研究 round 创建时绑定当前时间段的模型选择；切换时间段不会中断已经运行的 round。上下文上限、输出上限和 temperature 统一由 DSH 全局模型设置负责，研究调度不重复覆盖。Superagent-sec 的镜像、Compose 和入口脚本不配置 provider、模型名或 API key；provider route 必须由 DSH 全局模型设置或运行者提供的完整 `SUPERAGENT_DSH_PATCH_FILE` 注册。外部 patch 通过 `SUPERAGENT_DSH_PATCH_HOST_FILE` 只读挂载，凭据保持在运行者自己的 secret/env 管理中。
 
 ## 验收
 
