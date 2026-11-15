@@ -96,7 +96,7 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --no-build
 
 持续研究的调度时区、时间段、研究 worker 数量、模型选择和单轮研究时限可在平台的“设置 → 研究调度”中修改，不需要编辑部署文件。默认调度不限单轮时限；只有特殊调度明确选择时限时，单轮研究时限才会从宿主投递本轮研究提案开始计时，并在 agent 提交检查点前由宿主看门狗执行。它不是模型 API 的请求 timeout，也不是 agent 的工具次数或 token 配额。每条调度拥有自己的时区，模型选择直接引用 DSH 全局设置中已经配置的 provider/model；API 地址、凭据和模型 token/采样参数不在 Superagent-sec 中复制维护。
 
-研究 round 创建时绑定当前时间段的模型选择；切换时间段不会中断已经运行的 round。上下文上限、输出上限和 temperature 统一由 DSH 全局模型设置负责，研究调度不重复覆盖。Superagent-sec 的镜像、Compose 和入口脚本不配置 provider、模型名或 API key；provider route 必须由 DSH 全局模型设置或运行者提供的完整 `SUPERAGENT_DSH_PATCH_FILE` 注册。外部 patch 通过 `SUPERAGENT_DSH_PATCH_HOST_FILE` 只读挂载，凭据保持在运行者自己的 secret/env 管理中。
+研究 round 创建时绑定当前时间段的模型选择；切换时间段不会中断已经运行的 round。上下文上限、输出上限和 temperature 统一由 DSH 全局模型设置负责，研究调度不重复覆盖。Superagent-sec 的镜像、Compose 和入口脚本不配置 provider、模型名或 API key；provider route 必须由 DSH 全局模型设置或运行者提供的完整 `SUPERAGENT_DSH_PATCH_FILE` 注册。外部 patch 通过 `SUPERAGENT_DSH_PATCH_HOST_FILE` 只读挂载，凭据放在 `SUPERAGENT_EXTERNAL_ENV_FILE` 指向的运行者 secret 文件中，两个文件都留在运行目录并保持 600 权限。
 
 ## 验收
 
