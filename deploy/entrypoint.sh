@@ -2,7 +2,8 @@
 set -eu
 
 profile=${SUPERAGENT_PROFILE:-superagent-sec}
-app_dir=${SUPERAGENT_APP_DIR:-/opt/superagent-sec}
+source_mount=${SUPERAGENT_SOURCE_MOUNT:-/workspace/superagent-source}
+app_dir=${SUPERAGENT_APP_DIR:-/workspace/super-sec-agent}
 dsh_home=${DSH_HOME:-/var/lib/superagent/dsh-home}
 workspace=${SUPERAGENT_WORKSPACE:-/var/lib/superagent/workspace}
 projects_dir=${SUPERAGENT_PROJECTS_DIR:-/var/lib/superagent/projects}
@@ -13,10 +14,16 @@ external_patch=${SUPERAGENT_DSH_PATCH_FILE:-}
 
 mkdir -p "$dsh_home" "$workspace" "$projects_dir" "$state_dir" "$(dirname "$token_file")"
 chmod 700 "$dsh_home" "$(dirname "$token_file")" 2>/dev/null || true
-if [ ! -f "$app_dir/package.json" ]; then
-  echo "Superagent source mount is missing package.json: $app_dir" >&2
+if [ ! -f "$source_mount/package.json" ]; then
+  echo "Superagent source mount is missing package.json: $source_mount" >&2
   exit 1
 fi
+mkdir -p "$app_dir"
+# Keep the host checkout read-only and copy only application files into the
+# container's writable layer. Dependency and build volumes stay mounted at
+# their stable paths and are excluded from this sync.
+find "$app_dir" -mindepth 1 -maxdepth 1 ! -name node_modules ! -name lib -exec rm -rf {} +
+find "$source_mount" -mindepth 1 -maxdepth 1 ! -name node_modules ! -name lib -exec cp -a {} "$app_dir"/ \;
 if [ ! -d "$app_dir/node_modules" ]; then
   echo "Superagent dependency volume is missing: $app_dir/node_modules" >&2
   exit 1
@@ -26,6 +33,10 @@ if [ ! -f "$app_dir/node_modules/.modules.yaml" ]; then
   exit 1
 fi
 pnpm --dir "$app_dir" build >/dev/null
+if [ "${SUPERAGENT_SMOKE_ONLY:-}" = 1 ]; then
+  echo 'Superagent container smoke build completed.'
+  exit 0
+fi
 
 ssh_secret_dir=${SUPERAGENT_SSH_SECRET_DIR:-/var/lib/superagent/secrets/ssh}
 mkdir -p "$ssh_secret_dir"

@@ -1,4 +1,4 @@
-# superagent-sec v0.1.0-sec.4
+# superagent-sec v0.1.0-sec.5
 
 Deployment candidate for the isolated Superagent-sec runtime.
 
@@ -15,3 +15,5 @@ Before importing an asset, verify its `.sha256` file and select the archive matc
 - Provider, model name, API endpoint, and credentials are intentionally external to the image and Compose defaults; an operator may mount a complete DSH patch when needed.
 
 - The dependency image pre-creates the writable `lib/` mountpoint required when the host checkout is mounted read-only.
+
+- Host checkouts mount at a separate read-only source path and are synchronized into the writable application layer before the build, so fresh checkouts do not need a pre-existing `lib/` directory.

@@ -15,6 +15,7 @@ services:
       - "${SUPERAGENT_BIND_HOST:-127.0.0.1}:${SUPERAGENT_HOST_WEB_PORT:-3184}:3184"
     environment:
       SUPERAGENT_PROFILE: ${SUPERAGENT_PROFILE:-superagent-sec}
+      SUPERAGENT_SOURCE_MOUNT: /workspace/superagent-source
       SUPERAGENT_APP_DIR: /workspace/super-sec-agent
       SUPERAGENT_PROJECTS_DIR: /var/lib/superagent/projects
       SUPERAGENT_PROJECT_ID: ${SUPERAGENT_PROJECT_ID:-default}
@@ -39,7 +40,7 @@ services:
     volumes:
       # The checkout stays on the host. The image supplies the toolchain and
       # the two child volumes supply writable dependencies/build output.
-      - ${SUPERAGENT_SOURCE_DIR:-..}:/workspace/super-sec-agent:ro
+      - ${SUPERAGENT_SOURCE_DIR:-..}:/workspace/superagent-source:ro
       - superagent-node-modules:/workspace/super-sec-agent/node_modules
       - superagent-lib:/workspace/super-sec-agent/lib
       - ${SUPERAGENT_PROJECTS_DIR:-./.container-data/projects}:/var/lib/superagent/projects
