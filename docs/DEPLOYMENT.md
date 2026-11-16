@@ -10,7 +10,7 @@
 
 ```sh
 git pull --ff-only
-./scripts/deploy update
+./scripts/deploy update --recreate-network
 ```
 
 以后更新只需要：
@@ -76,6 +76,26 @@ docker load < superagent-sec-runtime-v0.1.0-sec.6-linux-amd64.tar.gz
 ./scripts/deploy stop     # 停止服务，保留全部数据
 ./scripts/deploy start    # 从当前 checkout 构建并启动
 ```
+
+## Docker 网段与内网代理冲突
+
+默认 Docker 网段为 `192.168.240.0/24`，避免 Docker 自动分配的 `172.18.0.0/16` 抢占内网代理 `172.18.100.92` 的路由。部署前确认所选网段不与 LAN、VPN 或其他 Docker 网络重叠；同一宿主的多个实例必须分别选择不同网段。
+
+已有部署在原来的 Compose env 文件（默认 `deploy/.env`）加入：
+
+```dotenv
+SUPERAGENT_DOCKER_SUBNET=192.168.240.0/24
+```
+
+然后执行一次：
+
+```sh
+./scripts/deploy update --recreate-network
+```
+
+非默认 env 文件仍用 `./scripts/deploy --env-file /路径/deploy.env update --recreate-network`。已拉取代码或离线部署时可加 `--no-pull`。脚本先构建、暂停研究并等待当前轮结束，再重建当前 Compose 项目的网络与容器；沿用旧项目名（如 `deploy`）并保留全部挂载数据，不删除卷。网络重建期间网站会短暂离线。之后日常更新继续使用 `./scripts/deploy update`。
+
+全新部署可在 `setup` 命令加 `--subnet 192.168.240.0/24`，脚本会把它写入 env 文件。不要只运行 `up -d` 来修改已有网络的子网；Docker 必须先移除旧网络。此设置仅影响本项目，不修改 Docker 全局网络配置。
 
 远程浏览器通过 SSH 转发，例如远端发布端口为 3184：
 

@@ -1,4 +1,11 @@
 name: superagent-sec-${SUPERAGENT_PROJECT_ID:-default}
+networks:
+  default:
+    ipam:
+      config:
+        # Keep this separate from LAN/VPN routes (including internal proxies).
+        # Set a distinct subnet for each instance on the same Docker host.
+        - subnet: ${SUPERAGENT_DOCKER_SUBNET:-192.168.240.0/24}
 services:
   superagent-sec:
     platform: ${SUPERAGENT_CONTAINER_PLATFORM:-}

@@ -6,7 +6,7 @@ import runpy
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 module = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/deploy'))
 Deployment = module['Deployment']
@@ -84,6 +84,45 @@ class DeploymentTest(unittest.TestCase):
         deploy.start.assert_called_once()
         deploy.url.assert_called_once()
         deploy.api.assert_not_called()
+
+    def test_network_recreation_waits_for_idle_research_and_preserves_data(self):
+        deploy = Deployment.__new__(Deployment)
+        deploy.service = {'image': 'app:test'}
+        deploy.compose = Mock(return_value=subprocess.CompletedProcess([], 0, 'container-id', ''))
+        deploy.build = Mock()
+        state = {'continuous': {'enabled': True, 'activeRounds': []}}
+        deploy.api = Mock(return_value=state)
+        deploy.start = Mock()
+        deploy.url = Mock()
+        order = Mock()
+        for name in ('build', 'api', 'compose', 'start'):
+            order.attach_mock(getattr(deploy, name), name)
+        with patch.dict(Deployment.update.__globals__, run=Mock(return_value=subprocess.CompletedProcess([], 0, 'previous-image-id', ''))):
+            deploy.update(recreate_network=True)
+        calls = order.mock_calls
+        down = calls.index(call.compose('down'))
+        self.assertLess(calls.index(call.api('research/continuous', {'enabled': False})), down)
+        research_checks = [i for i, recorded in enumerate(calls) if recorded == call.api('research')]
+        self.assertEqual(len(research_checks), 2)
+        self.assertLess(research_checks[-1], down)
+        self.assertLess(down, calls.index(call.start()))
+        deploy.compose.assert_any_call('down')
+        self.assertFalse(any('-v' in call.args for call in deploy.compose.call_args_list))
+        deploy.api.assert_any_call('research/continuous', {'enabled': True, 'preserveBlockers': True})
+
+    def test_network_recreation_does_not_stop_active_research(self):
+        deploy = Deployment.__new__(Deployment)
+        deploy.compose = Mock(return_value=subprocess.CompletedProcess([], 0, 'container-id', ''))
+        deploy.build = Mock()
+        deploy.api = Mock(return_value={'continuous': {'enabled': False, 'activeRounds': ['round']}})
+        deploy.start = Mock()
+        with patch.dict(Deployment.update.__globals__,
+                        run=Mock(return_value=subprocess.CompletedProcess([], 0, 'previous-image-id', '')),
+                        time=Mock(monotonic=Mock(side_effect=[0, 61]))):
+            with self.assertRaisesRegex(RuntimeError, 'still finishing'):
+                deploy.update(recreate_network=True)
+        deploy.start.assert_not_called()
+        self.assertNotIn(call('down'), deploy.compose.call_args_list)
 
     def test_failed_restart_rolls_back_and_restores_the_prior_research_setting(self):
         deploy = Deployment.__new__(Deployment)

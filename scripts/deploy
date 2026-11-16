@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compose setup and updates using Docker's resolved configuration as the source of truth."""
 import argparse
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -134,12 +135,14 @@ p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\\n')
             self.expert(action)
         print(f'Workspace ready: {self.host_workspace}')
 
-    def update(self):
+    def update(self, recreate_network=False):
         # A failed build leaves the running container alone.
         container = self.compose('ps', '-q', 'superagent-sec', capture=True).stdout.strip()
         previous = run(['docker', 'inspect', '--format', '{{.Image}}', container], capture=True).stdout.strip() if container else None
         self.build()
         if not container:
+            if recreate_network:
+                self.compose('down')
             self.start()
             self.url()
             return
@@ -157,6 +160,10 @@ p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\\n')
                     raise RuntimeError('Research is still finishing a round. Service was not restarted; retry update after it finishes.')
                 time.sleep(2)
             try:
+                if recreate_network:
+                    # Keep the adopted project name and all bind-mounted data.
+                    # Docker cannot change the subnet of an existing network.
+                    self.compose('down')
                 self.start()
             except subprocess.CalledProcessError:
                 if previous:
@@ -184,6 +191,13 @@ def identifier(value):
     return value
 
 
+def subnet(value):
+    try:
+        return str(ipaddress.IPv4Network(value))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError('Use an IPv4 network CIDR, for example 192.168.240.0/24.') from error
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--env-file', default=str(ROOT / 'deploy/.env'))
@@ -203,17 +217,20 @@ def main(argv=None):
             command.add_argument('--runtime-image', required=True)
             command.add_argument('--data-dir')
             command.add_argument('--port', type=int, default=3184)
+            command.add_argument('--subnet', type=subnet, help='Docker subnet; choose one outside LAN/VPN routes and other Docker networks.')
     for name in ('start', 'update', 'stop', 'status', 'url', 'logs', 'check'):
         command = commands.add_parser(name)
         command.add_argument('--env-file', default=argparse.SUPPRESS)
         if name == 'update':
             command.add_argument('--no-pull', action='store_true', help='Deploy the current checkout without git pull (for local development).')
+            command.add_argument('--recreate-network', action='store_true', help='Recreate the Compose network after changing SUPERAGENT_DOCKER_SUBNET; preserves data.')
     args = parser.parse_args(argv)
     if args.action == 'update' and not args.no_pull:
         if run(['git', 'status', '--porcelain', '--untracked-files=no'], capture=True).stdout.strip():
             raise RuntimeError('Checkout has local changes. Commit or move them before updating; nothing was overwritten. Developers can use update --no-pull.')
         run(['git', 'pull', '--ff-only'])
-        os.execv(sys.executable, [sys.executable, str(ROOT / 'scripts/deploy'), '--env-file', args.env_file, 'update', '--no-pull'])
+        os.execv(sys.executable, [sys.executable, str(ROOT / 'scripts/deploy'), '--env-file', args.env_file, 'update', '--no-pull',
+                                *(['--recreate-network'] if args.recreate_network else [])])
     if args.action == 'setup':
         env_file = Path(args.env_file).resolve()
         if not env_file.exists():
@@ -226,6 +243,8 @@ def main(argv=None):
                       'SUPERAGENT_APP_IMAGE': f'superagent-sec-app:{args.project_id}', 'SUPERAGENT_PROJECTS_DIR': str(base / 'projects'),
                       'SUPERAGENT_DATA_DIR': str(base / 'data'), 'SUPERAGENT_HOST_WEB_PORT': str(args.port),
                       'SUPERAGENT_CONTAINER_PLATFORM': platform}
+            if args.subnet:
+                values['SUPERAGENT_DOCKER_SUBNET'] = args.subnet
             if any('\n' in value or '\r' in value or "'" in value for value in values.values()):
                 raise RuntimeError('Deployment paths and image names cannot contain quotes or newlines.')
             env_file.parent.mkdir(parents=True, exist_ok=True)
@@ -250,7 +269,7 @@ def main(argv=None):
         deployment.start()
         deployment.url()
     elif args.action == 'update':
-        deployment.update()
+        deployment.update(recreate_network=args.recreate_network)
     elif args.action == 'stop':
         deployment.compose('stop', 'superagent-sec')
     elif args.action == 'status':
