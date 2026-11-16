@@ -27,8 +27,8 @@ function useModelCatalog() {
   return { catalog, error: error ? errorText(error) : undefined }
 }
 
-function ResearchModelField({ value, onChange, globalModels, catalog }: {
-  value: Schedule['model']; onChange: (value: Schedule['model']) => void; globalModels: ModelChoice[]; catalog?: ApiResponse<'GET models'>
+function ResearchModelField({ value, onChange, globalModels, catalog, inheritLabel }: {
+  value: Schedule['model']; onChange: (value: Schedule['model']) => void; globalModels: ModelChoice[]; catalog?: ApiResponse<'GET models'>; inheritLabel?: string
 }) {
   const { t } = usePanel()
   const catalogChoices: ModelChoice[] = catalog?.groups.flatMap(group => group.models.map(model => ({
@@ -53,14 +53,14 @@ function ResearchModelField({ value, onChange, globalModels, catalog }: {
     onChange(first ?? null)
   }
   return <div className="dt-model">
-    <Hint>{t('researchDefaultRoute', { route: defaultRoute })}</Hint>
+    {!value && !inheritLabel && <Hint>{t('researchDefaultRoute', { route: defaultRoute })}</Hint>}
     <div className="dt-grid2">
       <Field label={t('researchProvider')} hint={t('researchProviderHint')}><select className="dt-select" value={provider} onChange={event => updateProvider(event.target.value)}>
-        <option value="">{t('researchUseDefault')}</option>{[...providerNames.entries()].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+        <option value="">{inheritLabel ?? t('researchUseDefault')}</option>{[...providerNames.entries()].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
       </select></Field>
       <Field label={t('researchModel')} hint={t('researchModelHint')}><select className="dt-select" value={selectedModel} disabled={!provider}
         onChange={event => onChange(models.find(choice => choice.model?.model === event.target.value)?.model ?? null)}>
-        <option value="">{provider ? t('researchChooseModel') : t('researchUseDefault')}</option>{models.map(choice => <option key={choice.model!.model} value={choice.model!.model}>{choice.model!.model}</option>)}
+        <option value="">{provider ? t('researchChooseModel') : inheritLabel ?? t('researchUseDefault')}</option>{models.map(choice => <option key={choice.model!.model} value={choice.model!.model}>{choice.model!.model}</option>)}
       </select></Field>
     </div>
   </div>
@@ -94,7 +94,8 @@ export function ResearchSettings() {
         {catalogError && <p className="dt-error" role="alert">{t('modelCatalogError', { error: catalogError })}</p>}
         <div className="dt-card dt-research-default-schedule">
           <div className="dt-card-head"><strong className="dt-card-title">{t('researchDefaultSchedule')}</strong><span className="dt-tag" data-tone="neutral">{t('researchAllDay')}</span></div>
-          <Hint>{t('researchDefaultScheduleHint', { route: catalog?.default ? `${catalog.default.provider} / ${catalog.default.model}` : t('researchModelUnavailable') })}</Hint>
+          <Hint>{t('researchDefaultScheduleHint')}</Hint>
+          <ResearchModelField value={value.defaultModel ?? null} globalModels={globalModels} catalog={catalog} onChange={defaultModel => edit({ defaultModel })} />
         </div>
         <Section title={t('researchSchedules')} hint={t('researchSchedulesHint')} action={<Button variant="outline" size="sm" icon={<Icon name="plus" />} onClick={() => edit({ schedules: [...value.schedules, blank(nextScheduleId(value.schedules), t('researchNewSchedule'))] })}>{t('addResearchSchedule')}</Button>}>
           {value.schedules.map((item, index) => <div className="dt-card" key={item.id}>
@@ -112,7 +113,7 @@ export function ResearchSettings() {
               <PresetField label={t('researchTimeout')} hint={t('researchTimeoutHint')} value={item.timeoutSeconds} options={[undefined, 300, 600, 900, 1800, 3600]}
                 onChange={timeoutSeconds => update(index, { timeoutSeconds: timeoutSeconds ?? null })} format={value => value ? t('researchTimeoutValue', { minutes: value / 60 }) : t('researchTimeoutUnlimited')} />
             </div>
-            <ResearchModelField value={item.model} globalModels={globalModels} catalog={catalog} onChange={model => update(index, { model })} />
+            <ResearchModelField value={item.model} inheritLabel={t('researchUseAllDayModel')} globalModels={globalModels} catalog={catalog} onChange={model => update(index, { model })} />
           </div>)}
           {!value.schedules.length && <Hint>{t('researchSchedulesEmpty')}</Hint>}
         </Section>

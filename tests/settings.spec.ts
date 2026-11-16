@@ -54,6 +54,18 @@ it('validates research schedule model routes against the DSH catalog adapter bef
   expect(store.settings().research.schedules[0]!).toMatchObject({ id: 'night', maxWorkers: 3, model: value.schedules[0]!.model })
 })
 
+it('validates and persists the all-day research custom provider independently of time windows', async () => {
+  h = await startRuntime()
+  const { settings, store } = h.runtime
+  const llm = (h.ctx as unknown as { llm: { resolveCallConfig: ReturnType<typeof vi.fn> } }).llm
+  const value = { defaultModel: { provider: 'intranet-provider', model: 'intranet-model' }, schedules: [] }
+  llm.resolveCallConfig.mockRejectedValueOnce(new Error('provider unavailable'))
+  await expect(settings.save('research', value, store.blockRevision('research'), 'panel')).rejects.toMatchObject({ code: 'modelUnavailable' })
+  expect(store.settings().research.defaultModel).toBeUndefined()
+  await settings.save('research', value, store.blockRevision('research'), 'panel')
+  expect(store.settings().research.defaultModel).toEqual(value.defaultModel)
+})
+
 it('refuses a Policy sync that a Policy save outran, reports it on sync:feishu, and keeps the save', async () => {
   h = await startRuntime()
   const { settings, store } = h.runtime

@@ -41,7 +41,7 @@ it('runs a real local runtime through an active window and routes its selected m
   vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-11-15T01:00:00.000Z') })
   const root = workspace()
   host = await startRuntime(store => {
-    store.saveSettings({ ...store.settings(), research: { schedules: [
+    store.saveSettings({ ...store.settings(), research: { defaultModel: { provider: 'intranet-provider', model: 'intranet-model' }, schedules: [
       { id: 'night', name: 'Night', timezone: 'UTC', start: '00:00', end: '02:00', maxWorkers: 3,
         model: { provider: 'night-provider', model: 'night-model' }, timeoutSeconds: null },
       { id: 'day', name: 'Day', timezone: 'UTC', start: '02:00', end: '00:00', maxWorkers: 1,
@@ -92,4 +92,24 @@ it('backs off a transient autonomous failure before creating the next assignment
   vi.setSystemTime(new Date('2026-11-15T01:00:16.000Z'))
   await h.runtime.pump(); await h.runtime.idle()
   expect(h.runtime.store.tickets.get(ticket.id)!.assignments.length).toBeGreaterThan(before)
+})
+
+it.each(['2026-11-15T01:00:00.000Z', '2026-11-15T03:00:00.000Z'])('uses the all-day custom model inside an inheriting window and outside windows (%s)', async now => {
+  vi.useFakeTimers({ toFake: ['Date'], now: new Date(now) })
+  host = await startRuntime(store => {
+    store.saveSettings({ ...store.settings(), research: {
+      defaultModel: { provider: 'intranet-provider', model: 'intranet-model' },
+      schedules: [{ id: 'night', name: 'Night', timezone: 'UTC', start: '00:00', end: '02:00', maxWorkers: 1, model: null, timeoutSeconds: null }],
+    } })
+  }, { workspace: workspace() })
+  const h = host
+  await h.api('POST', 'research/continuous', { enabled: true })
+  await h.runtime.idle()
+  const ticket = h.runtime.store.tickets.open()[0]!, sessionId = `worker-${ticket.id}`
+  await h.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: '已接管研究。', reply_to_trigger_id: ticket.origin.triggerId })
+  await h.runtime.idle(); await h.runtime.pump(); await h.runtime.idle()
+  const append = (h.agents.get(sessionId) as unknown as { session: { append: ReturnType<typeof vi.fn> } }).session.append
+  expect(append.mock.calls.map(([type, value]) => ({ type, value }))).toContainEqual({
+    type: 'model/selection', value: { provider: 'intranet-provider', model: 'intranet-model' },
+  })
 })

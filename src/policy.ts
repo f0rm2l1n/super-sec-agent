@@ -106,7 +106,7 @@ export const ResearchScheduleSchema = z.object({
   timeoutSeconds: z.number().int().min(30).max(3600).nullable().default(null),
 }).strict()
 export type ResearchSchedule = z.infer<typeof ResearchScheduleSchema>
-const ResearchConfigValueSchema = z.object({ schedules: z.array(ResearchScheduleSchema).max(24).default([]) }).strict().superRefine((value, ctx) => {
+const ResearchConfigValueSchema = z.object({ defaultModel: ResearchRouteSchema.nullable().optional(), schedules: z.array(ResearchScheduleSchema).max(24).default([]) }).strict().superRefine((value, ctx) => {
   const ids = new Set<string>()
   for (const item of value.schedules) {
     if (ids.has(item.id)) ctx.addIssue({ code: 'custom', path: ['schedules'], message: `Duplicate schedule id: ${item.id}` })
@@ -132,9 +132,9 @@ const ResearchConfigValueSchema = z.object({ schedules: z.array(ResearchSchedule
 /** Accept the former config-level timezone once, then normalize it onto every schedule. */
 export const ResearchConfigSchema = z.preprocess(value => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value
-  const raw = value as { timezone?: unknown; schedules?: unknown[] }
+  const raw = value as { timezone?: unknown; defaultModel?: unknown; schedules?: unknown[] }
   const fallback = typeof raw.timezone === 'string' ? raw.timezone : 'Asia/Shanghai'
-  return { schedules: (raw.schedules ?? []).map(item => item && typeof item === 'object' && !Array.isArray(item)
+  return { ...(raw.defaultModel !== undefined ? { defaultModel: raw.defaultModel } : {}), schedules: (raw.schedules ?? []).map(item => item && typeof item === 'object' && !Array.isArray(item)
     ? { ...item, timezone: (item as { timezone?: unknown }).timezone ?? fallback } : item) }
 }, ResearchConfigValueSchema)
 export type ResearchConfig = z.infer<typeof ResearchConfigSchema>

@@ -141,7 +141,7 @@ export class Runtime extends Service implements SourceHost {
           const trigger = store.triggers.get(ticket.origin.triggerId)
           if (trigger?.source !== 'local') return undefined
           const window = activeResearchSchedule(store.settings().research)
-          const model = window?.schedule.model
+          const model = window?.schedule.model ?? store.settings().research.defaultModel
           if (!model) return undefined
           return model
         } })

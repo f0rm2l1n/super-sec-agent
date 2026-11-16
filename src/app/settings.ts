@@ -164,9 +164,9 @@ export class Settings {
     const parsed = rules.parse(value, sources, id)
     const candidate = rules.merge(current, parsed, id)
     const roleModels = block === 'eval' ? [candidate.eval.model] : block === 'executor' ? [candidate.executor.model]
-      : block === 'research' ? candidate.research.schedules.map(schedule => schedule.model) : []
+      : block === 'research' ? [candidate.research.defaultModel, ...candidate.research.schedules.map(schedule => schedule.model)] : []
     const previousModels = block === 'eval' ? [current.eval.model] : block === 'executor' ? [current.executor.model]
-      : block === 'research' ? current.research.schedules.map(schedule => schedule.model) : []
+      : block === 'research' ? [current.research.defaultModel, ...current.research.schedules.map(schedule => schedule.model)] : []
     const changedModels = roleModels.filter((model, index): model is NonNullable<typeof model> => !!model && JSON.stringify(model) !== JSON.stringify(previousModels[index]))
     for (const model of changedModels) {
       try { await resolveRoleModel(this.host.context, model) }

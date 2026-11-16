@@ -676,7 +676,7 @@ export class ContinuousResearch {
           const timeoutMs = schedule?.schedule.timeoutSeconds ? schedule.schedule.timeoutSeconds * 1000 : null
           // The worker Session persists across rounds; select the route at the
           // round boundary so schedule changes actually affect the next request.
-          this.host.selectModel?.(ticket.id, schedule?.schedule.model ?? null)
+          this.host.selectModel?.(ticket.id, schedule?.schedule.model ?? this.host.store.settings().research.defaultModel ?? null)
           worker.active = { id: randomUUID(), candidateId: candidate.id, question: candidate.question, rationale: candidate.rationale, hypothesis: candidate.hypothesis,
             evidencePlan: candidate.evidencePlan, stopCondition: candidate.stopCondition, startedAt: new Date().toISOString(),
             ...(timeoutMs === null ? {} : { deadline: new Date(Date.now() + timeoutMs).toISOString() }), timeoutMs, baseline: this.snapshot(), recoveries: 0 }

@@ -266,6 +266,8 @@ pnpm build
 
 研究提示词不估算工具调用次数，也不要求在某个模型步骤或分钟数内完成。`orchestrator_research_checkpoint` 是交付条件：本轮必须留下可验证的知识增量，或明确记录 blocked/exhausted；它不限制调查深度。命令等待、后台作业、源码检查和模型请求的超时属于 DSH 或宿主的故障保护，各自只约束对应的 I/O，不代表研究轮次预算。
 
+研究调度的全天模型由 `research.defaultModel` 指定，可选择 DSH 全局已配置的自定义模型提供商；留空才跟随 DSH 全局默认模型。时段的 `model` 非空时覆盖全天模型，留空时继承全天模型，未命中时段也使用全天模型。设置在新 worker 创建时和自主研究轮次开始时应用，不中断正在执行的模型请求。提供商凭据和连接参数仍在 DSH 全局模型设置中管理，无需创建全天时段来配置内网模型。
+
 API：POST /orchestrator/api/research/continuous，JSON {"enabled":true|false}，请求头 x-orchestrator-request: 1；该接口只控制调度。GET research 的 continuous 字段包含状态、当前问题、前沿、Attention 和最近 30 个检查点。研究授权通过 POST `/orchestrator/api/research/attention/:id/resolve` 提交 `{"decision":"approve"|"deny","note":"可选说明"}`，批准只恢复绑定的 workspace/candidate/round。源码和研究资产仍留在独立工作区，不进入产品历史。
 
 ### 持续研究后续 TODO
