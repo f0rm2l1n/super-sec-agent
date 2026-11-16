@@ -74,10 +74,24 @@ docker load < superagent-sec-runtime-v0.1.0-sec.6-linux-amd64.tar.gz
 ./scripts/deploy status   # 容器与健康状态
 ./scripts/deploy url      # 认证浏览器链接
 ./scripts/deploy logs     # 最近日志
+./scripts/deploy models   # 默认模型、可用提供商、角色与研究模型配置（不输出凭据）
 ./scripts/deploy check    # 校验已固定的项目资料
 ./scripts/deploy stop     # 停止服务，保留全部数据
 ./scripts/deploy start    # 从当前 checkout 构建并启动
 ```
+
+## 自定义模型可列出，但对话仍使用官方适配器
+
+新增自定义提供商不会自动改变 DSH 全局默认模型、已有会话的模型选择，或 Superagent-sec 的角色模型。`DeepSeek Messages transport failed` 来自 DeepSeek Messages 适配器；`[llm-deepseek-api-key] model listing ... failed` 则可能只是模型选择器枚举了已启用的官方提供商，不能单独用于判定对话路由。
+
+先执行 `./scripts/deploy models`（非默认配置加 `--env-file /路径/deploy.env`）。该命令只读取模型目录和角色配置，不发送测试对话、不修改选择、不输出凭据：
+
+- `globalDefault`：DSH 新会话的默认提供商与模型。
+- `configuredProviders`：当前模型目录中可用的提供商及模型 ID；自定义模型能列出说明模型发现成功，不代表对话 POST 或流式响应一定成功。
+- `roleOverrides`：Superagent-sec 的评估/执行模型覆盖，`null` 表示该角色未设置独立覆盖。
+- `researchAllDay`、`researchWindows`：全天研究模型和时段覆盖，时段为 `null` 时继承全天模型。
+
+如果 `globalDefault` 仍是 `deepseek-official`，在 DSH 对话输入框旁的模型选择器明确选择自定义提供商和模型，再新建会话测试；已有会话要单独切换。研究模型在「设置 → 研究调度」配置。该诊断输出不包含已有会话的实时模型选择或网关地址，仍需对照出错会话的模型选择器；不要把模型发现成功直接当成对话链路已验证。
 
 ## Docker 网段与内网代理冲突
 

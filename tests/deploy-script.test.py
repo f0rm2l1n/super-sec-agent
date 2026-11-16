@@ -1,5 +1,7 @@
 """Failure-mode tests for the Compose operator entrypoint (no daemon required)."""
 import argparse
+from contextlib import redirect_stdout
+import io
 import json
 from pathlib import Path
 import runpy
@@ -13,6 +15,29 @@ Deployment = module['Deployment']
 
 
 class DeploymentTest(unittest.TestCase):
+    def test_model_diagnostics_separate_global_default_from_research_without_printing_secrets(self):
+        deploy = Deployment.__new__(Deployment)
+        deploy.api = Mock(side_effect=[{
+            'default': {'provider': 'deepseek-official', 'model': 'deepseek-flash', 'apiKey': 'DO-NOT-PRINT'},
+            'groups': [{'id': 'internal', 'models': [{'id': 'custom', 'apiKey': 'DO-NOT-PRINT'}]}],
+            'failures': [{'id': 'broken', 'message': 'DO-NOT-PRINT'}],
+        }, {'blocks': {
+            'eval': {'value': {'model': None}},
+            'executor': {'value': {'model': {'provider': 'internal', 'model': 'custom'}}},
+            'research': {'value': {'defaultModel': {'provider': 'internal', 'model': 'custom'},
+                                   'schedules': [{'id': 'night', 'model': None}]}},
+        }, 'environment': {'variables': {'API_KEY': 'DO-NOT-PRINT'}}}])
+        output = io.StringIO()
+        with redirect_stdout(output):
+            deploy.models()
+        self.assertNotIn('DO-NOT-PRINT', output.getvalue())
+        result = json.loads(output.getvalue())
+        self.assertEqual(result['globalDefault']['provider'], 'deepseek-official')
+        self.assertEqual(result['researchAllDay'], {'provider': 'internal', 'model': 'custom'})
+        self.assertEqual(result['configuredProviders'], [{'provider': 'internal', 'models': ['custom']}])
+        self.assertEqual(result['researchWindows'], [{'id': 'night', 'model': None}])
+        self.assertEqual(deploy.api.call_args_list, [call('models'), call('settings')])
+
     def test_start_waits_up_to_fifteen_minutes_for_slow_startup(self):
         deploy = Deployment.__new__(Deployment)
         deploy.compose = Mock()

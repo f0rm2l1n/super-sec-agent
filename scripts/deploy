@@ -79,6 +79,24 @@ fetch('http://127.0.0.1:3184/orchestrator/api/'+process.argv[1], {
     def build(self):
         self.compose('build', 'superagent-sec')
 
+    def models(self):
+        # Project only routing metadata. Settings may also contain environment
+        # variables and other secrets; never print the complete API responses.
+        catalog = self.api('models')
+        blocks = self.api('settings')['blocks']
+        def route(value):
+            return {key: value[key] for key in ('provider', 'model') if key in value} if value else None
+        research = blocks['research']['value']
+        print(json.dumps({
+            'globalDefault': route(catalog.get('default')),
+            'configuredProviders': [{'provider': group['id'], 'models': [model['id'] for model in group.get('models', [])]}
+                                    for group in catalog.get('groups', [])],
+            'catalogFailureProviders': [item['id'] for item in catalog.get('failures', [])],
+            'roleOverrides': {name: route(blocks[name]['value'].get('model')) for name in ('eval', 'executor')},
+            'researchAllDay': route(research.get('defaultModel')),
+            'researchWindows': [{'id': item['id'], 'model': route(item.get('model'))} for item in research.get('schedules', [])],
+        }, ensure_ascii=False, indent=2))
+
     def start(self):
         self.compose('up', '-d', '--wait', '--wait-timeout', '900', 'superagent-sec')
 
@@ -218,7 +236,7 @@ def main(argv=None):
             command.add_argument('--data-dir')
             command.add_argument('--port', type=int, default=3184)
             command.add_argument('--subnet', type=subnet, help='Docker subnet; choose one outside LAN/VPN routes and other Docker networks.')
-    for name in ('start', 'update', 'stop', 'status', 'url', 'logs', 'check'):
+    for name in ('start', 'update', 'stop', 'status', 'url', 'logs', 'check', 'models'):
         command = commands.add_parser(name)
         command.add_argument('--env-file', default=argparse.SUPPRESS)
         if name == 'update':
@@ -278,6 +296,8 @@ def main(argv=None):
         deployment.url()
     elif args.action == 'logs':
         deployment.compose('logs', '--tail', '100', 'superagent-sec')
+    elif args.action == 'models':
+        deployment.models()
     elif args.action == 'check':
         deployment.expert('check')
 
