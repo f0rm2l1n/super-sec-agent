@@ -18,6 +18,7 @@ const publicHost = process.env.DSH_SUPERAGENT_WEB_HOST || '127.0.0.1'
 const publicPort = Number(process.env.DSH_SUPERAGENT_WEB_PORT || 3184)
 const advertisedHost = process.env.DSH_SUPERAGENT_WEB_ADVERTISE_HOST
   || (publicHost === '0.0.0.0' || publicHost === '::' ? '127.0.0.1' : publicHost)
+const advertisedPort = Number(process.env.DSH_SUPERAGENT_WEB_ADVERTISE_PORT || publicPort)
 const backendHost = process.env.DSH_SUPERAGENT_BACKEND_HOST || '127.0.0.1'
 const backendPort = Number(process.env.DSH_SUPERAGENT_BACKEND_PORT || 3182)
 const backendAuthority = `${backendHost}:${backendPort}`
@@ -44,7 +45,9 @@ function accessToken() {
   }
   const value = crypto.randomBytes(32).toString('base64url')
   fs.mkdirSync(path.dirname(tokenFile), { recursive: true, mode: 0o700 })
-  fs.writeFileSync(tokenFile, `${value}\n`, { mode: 0o600, flag: 'wx' })
+  // An interrupted first start can leave an empty token file behind.
+  fs.writeFileSync(tokenFile, `${value}\n`, { mode: 0o600 })
+  fs.chmodSync(tokenFile, 0o600)
   return value
 }
 
@@ -72,6 +75,14 @@ function authenticated(request, url) {
 
 function queryAuthenticated(request, url) {
   return sameSecret(url.searchParams.get('token'), projectToken)
+}
+
+function sameOrigin(request) {
+  if (!request.headers.origin) return true
+  try {
+    const origin = new URL(request.headers.origin)
+    return ['http:', 'https:'].includes(origin.protocol) && origin.host === request.headers.host
+  } catch { return false }
 }
 
 function requestPathWithoutToken(rawUrl) {
@@ -136,6 +147,11 @@ function forward(request, response, requestPath) {
 }
 
 const server = http.createServer((request, response) => {
+  if (!sameOrigin(request)) {
+    response.writeHead(403, { 'cache-control': 'no-store' })
+    response.end('Cross-origin gateway request rejected.\n')
+    return
+  }
   const url = new URL(request.url || '/', `http://${publicHost}:${publicPort}`)
   if (!authenticated(request, url)) {
     response.writeHead(401, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'www-authenticate': 'Bearer' })
@@ -153,6 +169,10 @@ const server = http.createServer((request, response) => {
 })
 
 server.on('upgrade', (request, clientSocket, head) => {
+  if (!sameOrigin(request)) {
+    clientSocket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+    return
+  }
   const url = new URL(request.url || '/', `http://${publicHost}:${publicPort}`)
   if (!authenticated(request, url)) {
     clientSocket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
@@ -167,10 +187,12 @@ server.on('upgrade', (request, clientSocket, head) => {
   })
   upstream.on('error', () => clientSocket.destroy())
   clientSocket.on('error', () => upstream.destroy())
+  clientSocket.on('close', () => upstream.destroy())
+  upstream.on('close', () => clientSocket.destroy())
 })
 
 server.listen(publicPort, publicHost, () => {
   const token = process.env.DSH_SUPERAGENT_ACCESS_TOKEN ? '<provided by environment>' : projectToken
-  console.log(`Superagent-sec authenticated web: http://${advertisedHost}:${publicPort}/?token=${token}`)
+  console.log(`Superagent-sec authenticated web: http://${advertisedHost}:${advertisedPort}/?token=${token}`)
   console.log(`Token file: ${tokenFile}`)
 })

@@ -13,3 +13,5 @@ artifacts
 *.sqlite3
 *.db
 *.log
+index.js
+.container-data

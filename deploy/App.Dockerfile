@@ -4,7 +4,11 @@ ARG RUNTIME_IMAGE=superagent-sec-runtime:stable
 FROM ${RUNTIME_IMAGE}
 
 WORKDIR /opt/superagent-sec
+# Preserve the dependency image's lock before COPY replaces it.
+RUN cp pnpm-lock.yaml /tmp/superagent-runtime-lock.yaml
 COPY . .
+RUN cmp -s pnpm-lock.yaml /tmp/superagent-runtime-lock.yaml \
+  || { echo 'Dependency lock changed: build or import a runtime image for this checkout before building the app.' >&2; exit 1; }
 RUN pnpm build
 
 # Keep the dependency/runtime image reusable while allowing deployment fixes in
@@ -13,8 +17,8 @@ COPY deploy/entrypoint.sh /usr/local/bin/superagent-entrypoint
 RUN chmod 755 /usr/local/bin/superagent-entrypoint
 
 # A 401 from the token gateway only proves that the proxy is listening. Read
-# the token file and make an authenticated request so Docker also restarts the
-# container when the DSH backend later dies or becomes unreachable.
+# the token file and check the management API, including the loaded plugin.
+# Docker reports unhealthy containers; the entrypoint supervises process exits.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD node -e "const fs = require('node:fs'); const token = fs.readFileSync(process.env.DSH_SUPERAGENT_ACCESS_TOKEN_FILE || '/var/lib/superagent/secrets/web-token', 'utf8').trim(); fetch('http://127.0.0.1:' + (process.env.DSH_SUPERAGENT_WEB_PORT || '3184') + '/', { headers: { authorization: 'Bearer ' + token } }).then((response) => process.exit(response.status < 500 ? 0 : 1)).catch(() => process.exit(1))"
+  CMD node /opt/superagent-sec/scripts/container-health.mjs
 

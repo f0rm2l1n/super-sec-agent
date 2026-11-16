@@ -2,7 +2,7 @@
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
 import { latestAssignment, liveTicket, runningAssignment } from './model.ts'
-import type { ReportState, Ticket } from './model.ts'
+import type { AttentionRequest, ReportState, Ticket } from './model.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
 import type { Replies } from './replies.ts'
 import { automatic, type Tickets } from './tickets.ts'
@@ -13,6 +13,8 @@ export interface WorkerReport {
   summary: string
   /** Open question for a person: a string asks it, `null` clears an open one, and `undefined` keeps the current one. */
   question?: string | null
+  /** Structured Attention. `question` remains accepted for older workers and adapters. */
+  attention?: AttentionRequest | null
   /** The person's message whose request raised the question; routes the question to the channel where it was written. */
   askedBy?: string
   /** The person's question this report answers, which the worker thereby takes up; authorizes the main Session to send an answer reply. */
@@ -99,8 +101,13 @@ export class Assignments extends EnginePart {
   report(ticketId: string, report: WorkerReport): Ticket {
     const ticket = this.require(ticketId)
     if (!liveTicket(ticket)) throw new UserError('ticketEnded')
-    if (report.question && (report.state === 'ready' || report.answers)) throw new UserError('questionWithResult')
-    if (report.askedBy && !report.question) throw new UserError('askerWithoutQuestion')
+    const request = report.attention === null
+      ? null
+      : report.attention ?? (report.question ? { kind: 'question' as const, question: report.question } : undefined)
+    if (request && report.question && request.question !== report.question) throw new UserError('questionWithResult')
+    const question = request?.question ?? report.question
+    if (question && (report.state === 'ready' || report.answers)) throw new UserError('questionWithResult')
+    if (report.askedBy && !question) throw new UserError('askerWithoutQuestion')
     const person = (id: string, channel: boolean) => {
       const trigger = this.repo.triggers.get(id)
       return !!trigger?.human && (!channel || !!trigger.channel) && this.reaches(ticket, trigger, false)
@@ -112,9 +119,13 @@ export class Assignments extends EnginePart {
     if (assignment.state === 'ended') throw new UserError('assignmentEnded')
     const at = this.now()
     const previous = ticket.attention
-    const ask = (question: string) => ({ id: key('attention', ticketId, question, at), question, ...(report.askedBy ? { triggerId: report.askedBy } : {}) })
-    const asked = report.question && report.question !== previous?.question ? ask(report.question) : previous
-    const attention = report.question === null || report.state === 'ready' ? undefined : asked
+    const ask = (value: AttentionRequest) => ({ id: key('attention', ticketId, value.question, at), ...value, ...(report.askedBy ? { triggerId: report.askedBy } : {}) })
+    const previousRequest = previous && { kind: previous.kind ?? 'question', question: previous.question, ...previous.action ? { action: previous.action } : {},
+      ...previous.target ? { target: previous.target } : {}, ...previous.scope ? { scope: previous.scope } : {},
+      ...previous.constraints ? { constraints: previous.constraints } : {}, ...previous.candidateId ? { candidateId: previous.candidateId } : {},
+      ...previous.roundId ? { roundId: previous.roundId } : {}, ...previous.expiresAt ? { expiresAt: previous.expiresAt } : {} }
+    const asked = request && JSON.stringify(request) !== JSON.stringify(previousRequest) ? ask(request) : previous
+    const attention = report.attention === null || report.question === null || report.state === 'ready' ? undefined : asked
     if (attention) ticket.attention = attention
     else delete ticket.attention
     // A replaced or cleared attention question withdraws any pending unsent reply for the previous question from the outbox.

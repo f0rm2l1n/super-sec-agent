@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""Compose setup and updates using Docker's resolved configuration as the source of truth."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def run(argv, capture=False, check=True):
+    return subprocess.run([str(arg) for arg in argv], cwd=ROOT, check=check,
+                          text=True, capture_output=capture)
+
+
+class Deployment:
+    def __init__(self, env_file):
+        self.env_file = Path(env_file).resolve()
+        if not self.env_file.is_file():
+            raise RuntimeError(f'Missing deployment config: {self.env_file}. Run scripts/deploy setup first.')
+        self.command = ['docker', 'compose', '--env-file', str(self.env_file), '-f', str(ROOT / 'deploy/compose.yaml')]
+        config = json.loads(self.compose('config', '--format', 'json', capture=True).stdout)
+        self.service = config['services']['superagent-sec']
+        self.env = self.service['environment']
+        self.workspace = self.env['SUPERAGENT_WORKSPACE']
+        self.project_id = self.env['SUPERAGENT_PROJECT_ID']
+        self.mounts = {v['target']: Path(v['source']) for v in self.service['volumes'] if v['type'] == 'bind'}
+        relative = Path(self.workspace).relative_to('/var/lib/superagent/projects')
+        self.host_workspace = self.mounts['/var/lib/superagent/projects'] / relative
+        self.adopt_existing()
+
+    def adopt_existing(self):
+        # Older guides used Compose's directory-derived name (often "deploy").
+        # Preserve it instead of accidentally creating a second instance.
+        ids = run(['docker', 'ps', '-aq', '--filter', 'label=com.docker.compose.service=superagent-sec'], capture=True).stdout.split()
+        if not ids:
+            return
+        containers = json.loads(run(['docker', 'inspect', *ids], capture=True).stdout)
+        projects = set()
+        for container in containers:
+            labels = container['Config'].get('Labels') or {}
+            mounts = {m['Destination']: m['Source'] for m in container.get('Mounts', [])}
+            same_state = mounts.get('/var/lib/superagent/state') == str(self.mounts['/var/lib/superagent/state'])
+            same_workspace = mounts.get('/var/lib/superagent/projects') == str(self.mounts['/var/lib/superagent/projects'])
+            if same_state and same_workspace:
+                projects.add(labels['com.docker.compose.project'])
+        if len(projects) > 1:
+            raise RuntimeError('Multiple Compose projects share these state mounts; stop the duplicate instance before updating.')
+        if projects:
+            self.command += ['-p', projects.pop()]
+
+    def compose(self, *args, **kwargs):
+        return run(self.command + list(args), **kwargs)
+
+    def expert(self, action, *args):
+        self.compose('run', '--rm', '--no-deps', '--user', f'{os.getuid()}:{os.getgid()}',
+                     '--entrypoint', 'pnpm', 'superagent-sec', 'expert', action,
+                     '--workspace', self.workspace, *args)
+
+    def api(self, route, body=None):
+        script = """const fs=require('node:fs');
+const token=process.env.DSH_SUPERAGENT_ACCESS_TOKEN||fs.readFileSync(process.env.DSH_SUPERAGENT_ACCESS_TOKEN_FILE,'utf8').trim();
+const body=process.argv[2];
+fetch('http://127.0.0.1:3184/orchestrator/api/'+process.argv[1], {
+ method:body?'POST':'GET', headers:{authorization:'Bearer '+token,'x-orchestrator-request':'1','content-type':'application/json'},
+ ...(body?{body}:{}), signal:AbortSignal.timeout(10000)
+}).then(async r=>{if(!r.ok)throw new Error('Management API HTTP '+r.status);console.log(JSON.stringify(await r.json()))})
+.catch(e=>{console.error(e.message);process.exit(1)});"""
+        result = self.compose('exec', '-T', 'superagent-sec', 'node', '-e', script, route,
+                              *([json.dumps(body)] if body is not None else []), capture=True)
+        return json.loads(result.stdout)
+
+    def build(self):
+        self.compose('build', 'superagent-sec')
+
+    def start(self):
+        self.compose('up', '-d', '--wait', '--wait-timeout', '180', 'superagent-sec')
+
+    def url(self):
+        result = self.compose('exec', '-T', 'superagent-sec', 'node', '-e',
+                              "const fs=require('node:fs');console.log(process.env.DSH_SUPERAGENT_ACCESS_TOKEN||fs.readFileSync(process.env.DSH_SUPERAGENT_ACCESS_TOKEN_FILE,'utf8').trim())", capture=True)
+        token = result.stdout.strip()
+        if not token:
+            raise RuntimeError('Web token is empty; check scripts/deploy logs.')
+        host = self.env.get('DSH_SUPERAGENT_WEB_ADVERTISE_HOST', '127.0.0.1')
+        port = self.env.get('DSH_SUPERAGENT_WEB_ADVERTISE_PORT', '3184')
+        print(f'http://{host}:{port}/?token={token}')
+
+    def prepare(self, args):
+        if self.project_id != args.project_id:
+            raise RuntimeError(f'Config selects project {self.project_id}, not {args.project_id}. Nothing was changed.')
+        source = Path(args.source_dir).resolve(strict=True)
+        target = self.host_workspace / 'sources' / args.source_id
+        if not source.is_dir():
+            raise RuntimeError(f'Source must be a directory: {source}')
+        if (self.host_workspace / 'sources.lock.json').exists():
+            raise RuntimeError('Workspace already has a reviewed baseline. Use scripts/deploy check; copying and relocking are only for initial setup.')
+        if source != target.resolve() and (source in target.resolve().parents or target.resolve() in source.parents):
+            raise RuntimeError('Source and destination must not contain each other.')
+        if target.exists() and any(target.iterdir()) and source != target.resolve():
+            raise RuntimeError(f'Source destination is not empty: {target}. No files were overwritten.')
+        for target_path in ('/var/lib/superagent/projects', '/var/lib/superagent/state', '/var/lib/superagent/dsh-home', '/var/lib/superagent/secrets'):
+            self.mounts[target_path].mkdir(parents=True, exist_ok=True)
+        if not args.no_build:
+            self.build()
+        config_file = self.host_workspace / 'project.json'
+        if config_file.exists():
+            if json.loads(config_file.read_text())['id'] != args.project_id:
+                raise RuntimeError('Existing workspace has a different project ID.')
+        else:
+            self.expert('init', '--id', args.project_id, '--name', args.name or args.project_id, '--topic', args.topic)
+        if source != target.resolve():
+            target.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, target, dirs_exist_ok=True, symlinks=True)
+        script = """import json,sys
+from pathlib import Path
+p=Path(sys.argv[1])/'project.json'
+d=json.loads(p.read_text())
+source={'id':sys.argv[2],'path':'sources/'+sys.argv[2],'kind':sys.argv[3],'role':'subject','purpose':'Project material for security research'}
+d['sources']=[s for s in d.get('sources',[]) if s['id']!=source['id']]+[source]
+d['primarySource']=source['id']
+p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\\n')
+"""
+        self.compose('run', '--rm', '--no-deps', '--user', f'{os.getuid()}:{os.getgid()}', '--entrypoint', 'python3',
+                     'superagent-sec', '-c', script, self.workspace, args.source_id, args.kind)
+        if getattr(args, 'scope_file', None):
+            shutil.copyfile(args.scope_file, self.host_workspace / 'SCOPE.md')
+        for action in ('lock', 'check', 'prepare'):
+            self.expert(action)
+        print(f'Workspace ready: {self.host_workspace}')
+
+    def update(self):
+        # A failed build leaves the running container alone.
+        container = self.compose('ps', '-q', 'superagent-sec', capture=True).stdout.strip()
+        previous = run(['docker', 'inspect', '--format', '{{.Image}}', container], capture=True).stdout.strip() if container else None
+        self.build()
+        if not container:
+            self.start()
+            self.url()
+            return
+        research = self.api('research')
+        enabled = bool(research and research['continuous']['enabled'])
+        if enabled:
+            self.api('research/continuous', {'enabled': False})
+        try:
+            deadline = time.monotonic() + 60
+            while True:
+                research = self.api('research')
+                if not research or not research['continuous']['activeRounds']:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('Research is still finishing a round. Service was not restarted; retry update after it finishes.')
+                time.sleep(2)
+            try:
+                self.start()
+            except subprocess.CalledProcessError:
+                if previous:
+                    print('New application failed health checks; restoring the previous application image.', file=sys.stderr)
+                    run(['docker', 'tag', previous, self.service['image']])
+                    self.start()
+                raise
+        finally:
+            if enabled:
+                failure = sys.exc_info()[0] is not None
+                try:
+                    self.api('research/continuous', {'enabled': True, 'preserveBlockers': True})
+                except Exception:
+                    # An older rollback image may not support preserving blockers.
+                    # Leave research paused rather than clearing an approval gate.
+                    print('Could not restore research scheduling safely. Research remains paused; inspect the service before resuming in the UI.', file=sys.stderr)
+                    if not failure:
+                        raise
+        self.url()
+
+
+def identifier(value):
+    if not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', value):
+        raise argparse.ArgumentTypeError('Use lowercase letters, digits, underscores or hyphens, starting with a letter or digit.')
+    return value
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--env-file', default=str(ROOT / 'deploy/.env'))
+    commands = parser.add_subparsers(dest='action', required=True)
+    for name in ('setup', 'prepare'):
+        command = commands.add_parser(name)
+        command.add_argument('--env-file', default=argparse.SUPPRESS)
+        command.add_argument('--project-id', required=True, type=identifier)
+        command.add_argument('--source-dir', required=True)
+        command.add_argument('--source-id', default='main', type=identifier)
+        command.add_argument('--kind', choices=['directory', 'binary', 'pseudocode'], default='directory')
+        command.add_argument('--topic', required=True)
+        command.add_argument('--name')
+        command.add_argument('--scope-file')
+        command.add_argument('--no-build', action='store_true')
+        if name == 'setup':
+            command.add_argument('--runtime-image', required=True)
+            command.add_argument('--data-dir')
+            command.add_argument('--port', type=int, default=3184)
+    for name in ('start', 'update', 'stop', 'status', 'url', 'logs', 'check'):
+        command = commands.add_parser(name)
+        command.add_argument('--env-file', default=argparse.SUPPRESS)
+        if name == 'update':
+            command.add_argument('--no-pull', action='store_true', help='Deploy the current checkout without git pull (for local development).')
+    args = parser.parse_args(argv)
+    if args.action == 'update' and not args.no_pull:
+        if run(['git', 'status', '--porcelain', '--untracked-files=no'], capture=True).stdout.strip():
+            raise RuntimeError('Checkout has local changes. Commit or move them before updating; nothing was overwritten. Developers can use update --no-pull.')
+        run(['git', 'pull', '--ff-only'])
+        os.execv(sys.executable, [sys.executable, str(ROOT / 'scripts/deploy'), '--env-file', args.env_file, 'update', '--no-pull'])
+    if args.action == 'setup':
+        env_file = Path(args.env_file).resolve()
+        if not env_file.exists():
+            if not 1 <= args.port <= 65535:
+                raise RuntimeError('Port must be between 1 and 65535.')
+            Path(args.source_dir).resolve(strict=True)
+            platform = run(['docker', 'image', 'inspect', '--format', '{{.Os}}/{{.Architecture}}', args.runtime_image], capture=True).stdout.strip()
+            base = Path(args.data_dir).resolve() if args.data_dir else ROOT / '.artifacts/instances' / args.project_id
+            values = {'SUPERAGENT_PROJECT_ID': args.project_id, 'SUPERAGENT_RUNTIME_IMAGE': args.runtime_image,
+                      'SUPERAGENT_APP_IMAGE': f'superagent-sec-app:{args.project_id}', 'SUPERAGENT_PROJECTS_DIR': str(base / 'projects'),
+                      'SUPERAGENT_DATA_DIR': str(base / 'data'), 'SUPERAGENT_HOST_WEB_PORT': str(args.port),
+                      'SUPERAGENT_CONTAINER_PLATFORM': platform}
+            if any('\n' in value or '\r' in value or "'" in value for value in values.values()):
+                raise RuntimeError('Deployment paths and image names cannot contain quotes or newlines.')
+            env_file.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'w') as file:
+                file.write(''.join(f"{key}='{value}'\n" for key, value in values.items()))
+    deployment = Deployment(args.env_file)
+    if args.action in ('setup', 'prepare'):
+        if args.action == 'setup' and (deployment.host_workspace / 'sources.lock.json').exists():
+            if deployment.project_id != args.project_id:
+                raise RuntimeError('Existing deployment config selects a different project.')
+            deployment.expert('check')
+            if not args.no_build:
+                deployment.build()
+        else:
+            deployment.prepare(args)
+        if args.action == 'setup':
+            deployment.start()
+            deployment.url()
+    elif args.action == 'start':
+        deployment.build()
+        deployment.start()
+        deployment.url()
+    elif args.action == 'update':
+        deployment.update()
+    elif args.action == 'stop':
+        deployment.compose('stop', 'superagent-sec')
+    elif args.action == 'status':
+        deployment.compose('ps')
+    elif args.action == 'url':
+        deployment.url()
+    elif args.action == 'logs':
+        deployment.compose('logs', '--tail', '100', 'superagent-sec')
+    elif args.action == 'check':
+        deployment.expert('check')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (RuntimeError, ValueError, OSError, subprocess.CalledProcessError) as error:
+        print(f'Deployment failed: {error}', file=sys.stderr)
+        sys.exit(1)

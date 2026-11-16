@@ -98,7 +98,7 @@ A reference list of the terms this and the later documents use, with their Chine
 | Executor | 执行器 | The port that runs Assignments: one Executor Session and one directory per Ticket |
 | Execution environment | 执行环境 | Where Executor Sessions and the prepare command run: variables that the Executor and the Sources register, each with a key, a value and a description |
 | Report | 报告 | The state an Assignment reports to its Ticket |
-| Attention | 待人工决定 | A question on a Ticket that waits for a person's answer |
+| Attention | 待人工决定 | A concrete question or typed authorization action on a Ticket that waits for a person's response; an authorization is scoped to its research round and never changes the Ticket's Mandate |
 | Disposition | 去向 | The record of a Trigger being filtered, evaluated or fanned out |
 | Input | 输入 | Context delivered to a Ticket: fanned-out Triggers, Policy changes, resumes and text |
 | Scope | 范围 | The work a Mandate allows |

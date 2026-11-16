@@ -183,16 +183,9 @@ docker build -t superagent-sec-runtime:stable \
 docker save superagent-sec-runtime:stable | gzip > superagent-sec-runtime-stable.tar.gz
 ```
 
-把 `superagent-sec-runtime-stable.tar.gz`、`deploy/compose.yaml`、`deploy/App.Dockerfile`、`deploy/.env.example` 和一个不入 Git 的运行环境文件带入内网；复制并填写 `deploy/.env.example`（例如 `/srv/superagent-sec/runtime.env`）后，在内网执行：
+运行者的首次安装和从旧版本升级均使用 [部署速查](DEPLOYMENT.md) 中的 `scripts/deploy setup` / `scripts/deploy update`。完整应用 checkout 与 runtime image 一起交付；不应只拷贝 Compose 文件。已有 env、项目与状态直接复用，不需要重新初始化。
 
-```sh
-docker load < superagent-sec-runtime-stable.tar.gz
-docker compose --env-file /srv/superagent-sec/runtime.env -f deploy/compose.yaml build
-docker compose --env-file /srv/superagent-sec/runtime.env -f deploy/compose.yaml up -d
-docker compose --env-file /srv/superagent-sec/runtime.env -f deploy/compose.yaml logs -f
-```
-
-运行时镜像包含 Node、pnpm、DSH、锁定依赖、`openssh-client`，以及 agent 常用的 `bash`、`python3`、`ripgrep`、`jq`、`curl`、`file`、`binutils`、`sqlite3`、`unzip`、`xxd` 和 `procps`，但不包含应用源码。Compose 从当前 checkout 构建应用镜像，构建时生成 `lib/`；运行中的容器只挂载目标项目和运行状态，不挂载源码、`node_modules` 或 `lib`。因此内网主机不需要安装 Node 依赖，也不会修改 checkout。普通源码更新只需在 host 上 `git pull`，再执行 `docker compose build && docker compose up -d`；若 `package.json` 或 lockfile 改变，则先重建并重新导出运行时镜像。需要目标专属编译器、SDK 或 Python 包时，通过 SSH 进入目标 runtime 或使用项目自己的构建容器。
+运行时镜像包含 Node、pnpm、DSH、锁定依赖、`openssh-client`，以及 agent 常用的 `bash`、`python3`、`ripgrep`、`jq`、`curl`、`file`、`binutils`、`sqlite3`、`unzip`、`xxd` 和 `procps`，但不包含应用源码。Compose 从当前 checkout 构建应用镜像，构建时生成 `lib/`；运行中的容器只挂载目标项目和运行状态，不挂载源码、`node_modules` 或 `lib`。因此内网主机不需要安装 Node 依赖，也不会修改 checkout。普通源码更新使用 `scripts/deploy update`；若 `package.json` 或 lockfile 改变，则先重建并重新导出运行时镜像。需要目标专属编译器、SDK 或 Python 包时，通过 SSH 进入目标 runtime 或使用项目自己的构建容器。
 
 端口和挂载约定如下：
 
@@ -217,17 +210,7 @@ cat "$SUPERAGENT_DATA_DIR/secrets/ssh/id_ed25519.pub"
 
 `SUPERAGENT_PROJECTS_DIR` 是可扩展的项目根，不预设项目数量、项目名称或 Git 数量。每个 `projects/<project-id>/` 可以包含 `workspace/`、多个 repo checkout 和其他项目资料；默认 active workspace 是其中的 `workspace/`，可同时包含 `sources/` 下的多个 repo checkout，以及 docs、knowledge、reports、experiments、runtime、interactions 等其他目录，也可以按项目自身约定组织。当前 active workspace 通过 `SUPERAGENT_PROJECT_ID` 或显式的 `SUPERAGENT_WORKSPACE` 选择。需要并行运行多个项目时，为每个实例设置不同的 `SUPERAGENT_PROJECT_ID`、`SUPERAGENT_PROFILE`、`SUPERAGENT_STATE_DIR`、`DSH_HOME` 和宿主机端口，并使用不同的 Compose project name；不要让多个实例共享同一个 state 或 dsh-home。
 
-首次部署示例（源码在 host，数据单独存放）：
-
-```sh
-export SUPERAGENT_PROJECTS_DIR=/srv/superagent-sec/projects
-export SUPERAGENT_PROJECT_ID=tinyproxy
-export SUPERAGENT_DATA_DIR=/srv/superagent-sec/runtime/tinyproxy
-export DEEPSEEK_API_KEY='通过内网 secret 注入'
-docker compose -f deploy/compose.yaml build
-docker compose -f deploy/compose.yaml up -d
-docker compose -f deploy/compose.yaml logs -f
-```
+首次部署由 `scripts/deploy setup` 自动生成 Compose env、初始化资料、固定基线并启动。已有部署使用 `scripts/deploy update`，其配置解析、路径与旧 Compose 项目名均由脚本处理，避免维护多个相互冲突的手工示例。
 
 镜像默认只把宿主机回环地址映射到前端端口；若必须提供给内网其他机器，显式设置 `SUPERAGENT_BIND_HOST`，并在前面放置 TLS、网络 ACL 或 SSH tunnel。后端管理端口不会发布到宿主机，所有 Web 请求都必须通过 token 代理。
 
@@ -273,17 +256,17 @@ pnpm build
 
 ## 持续研究
 
-在项目安全专家面板点“开始 / 恢复研究”。首次启用作为用户授权保存到同一会话；专家确认后，宿主自动开始研究，不需要另一个 AI 发送聊天消息。默认不启用。
+在项目安全专家面板点“启动 / 恢复调度”。首次启用保存为持续研究的宿主开关；它不批准某个具体实验、工具安装或 runtime 访问。默认不启用。
 
 宿主复用现有 Engine.note、DSH worker、收件箱、效果队列及每两秒一次的编排 pass。宿主只提供项目章程、安全边界、资源预算和证据要求，不预设具体安全问题。专家先根据项目现况建立研究前沿，再为每轮提出问题、理由、假设、证据计划和停止条件，自主选择阅读与验证路径，写入知识目录，通过 orchestrator_research_checkpoint 提交证据和更新后的研究前沿。默认只有一个 research lane；特殊时间窗按 `maxWorkers`（1–256）建立独立 Ticket/Session/round，主 lane 之外的产物必须写入 `research/rounds/<round-id>/`，避免多个 worker 覆盖共享知识。宿主等待各 lane 真正空闲，间隔至少 10 秒再推进下一轮，并按影响、未知程度和可行性选择候选方向。没有额外的 AI 调度员；当前版本仍由每个专家 worker 完成选题、研究和自我反思，未来可将这些接口交给不同模型或 Agent。
 
 检查点校验工作区与源码锁、产物路径/文件存在及相对轮次开始的 SHA256 变化、源码路径/行号可用性；保留版本与文件哈希。SQLite 是恢复依据，runs/continuous-research/<round-id>.json 是可阅读的导出。研究调度和检查点原子提交，同轮检查点可幂等重试；重启沿用轮次编号，不重新开一轮。
 
-用户提问/纠正通过已有 steer 在下一模型步骤送达主 lane；主 lane 未完成回答时不投递新的主 lane 轮次，其他并发 lane 可以继续交付各自已开始的研究。当前自主研究可以在回答后接着完成。“本轮后暂停”停止后续调度，允许当前轮完成并保存，服务重启保留此状态。系统全局暂停也抑制自主调度；502、429、限流和网络错误会按 lane 持久退避后重试，主 lane 的不可恢复错误阻塞调度，次要 lane 只暂停该 lane。源码漂移、连续两次空闲仍不交检查点时停止并显示原因，处理后显式恢复。一次 `exhausted` 只表示当前候选前沿暂时收敛，宿主会自动安排一次新的前沿扫描并要求 agent 提出未重复方向；扫描仍无可验证方向时才暂停，等待新的项目证据或人工授权。默认研究轮次不限时；只有特殊调度明确设置了时限时，宿主才会在该时限后取消当前 worker 并停止自动调度。时限由宿主看门狗执行，不作为 agent 的工具次数或 token 配额。
+用户提问/纠正通过已有 steer 在下一模型步骤送达主 lane；主 lane 未完成回答时不投递新的主 lane 轮次，其他并发 lane 可以继续交付各自已开始的研究。当前自主研究可以在回答后接着完成。“本轮后暂停”停止后续调度，允许当前轮完成并保存，服务重启保留此状态。系统全局暂停也抑制自主调度；502、429、限流和网络错误会按 lane 持久退避后重试，主 lane 的不可恢复错误阻塞调度，次要 lane 只暂停该 lane。源码漂移、连续两次空闲仍不交检查点时停止并显示原因，处理后显式恢复。一次 `exhausted` 只表示当前候选前沿暂时收敛，宿主会自动安排一次新的前沿扫描并要求 agent 提出未重复方向；扫描仍无可验证方向时才暂停，等待新的项目证据或人工 Attention。若研究需要动态实验、安装工具或访问 runtime，必须在 blocked 检查点提交结构化 Attention，明确动作、目标、范围和限制；人工只通过 Attention 的批准/拒绝操作恢复对应候选，不切换全局调度开关。默认研究轮次不限时；只有特殊调度明确设置了时限时，宿主才会在该时限后取消当前 worker 并停止自动调度。时限由宿主看门狗执行，不作为 agent 的工具次数或 token 配额。
 
 研究提示词不估算工具调用次数，也不要求在某个模型步骤或分钟数内完成。`orchestrator_research_checkpoint` 是交付条件：本轮必须留下可验证的知识增量，或明确记录 blocked/exhausted；它不限制调查深度。命令等待、后台作业、源码检查和模型请求的超时属于 DSH 或宿主的故障保护，各自只约束对应的 I/O，不代表研究轮次预算。
 
-API：POST /orchestrator/api/research/continuous，JSON {"enabled":true|false}，请求头 x-orchestrator-request: 1。GET research 的 continuous 字段包含状态、当前问题、前沿和最近 30 个检查点。源码和研究资产仍留在独立工作区，不进入产品历史。
+API：POST /orchestrator/api/research/continuous，JSON {"enabled":true|false}，请求头 x-orchestrator-request: 1；该接口只控制调度。GET research 的 continuous 字段包含状态、当前问题、前沿、Attention 和最近 30 个检查点。研究授权通过 POST `/orchestrator/api/research/attention/:id/resolve` 提交 `{"decision":"approve"|"deny","note":"可选说明"}`，批准只恢复绑定的 workspace/candidate/round。源码和研究资产仍留在独立工作区，不进入产品历史。
 
 ### 持续研究后续 TODO
 

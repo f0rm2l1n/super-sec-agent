@@ -160,8 +160,15 @@ function routes(runtime: HttpHost): Routes {
     'GET state': () => stateView(runtime),
     'POST research/continuous': async ({ body }) => {
       if (!runtime.configured() || !runtime.research) throw new RouteError(400, 'Local research workspace is not ready')
-      const { enabled } = z.object({ enabled: z.boolean() }).strict().parse(await body())
-      const result = runtime.research.continuous.control(enabled)
+      const { enabled, preserveBlockers } = z.object({ enabled: z.boolean(), preserveBlockers: z.boolean().optional() }).strict().parse(await body())
+      const result = runtime.research.continuous.control(enabled, preserveBlockers)
+      runtime.requestPass()
+      return result
+    },
+    'POST research/attention/:id/resolve': async ({ params, body }) => {
+      if (!runtime.configured() || !runtime.research) throw new RouteError(400, 'Local research workspace is not ready')
+      const input = z.object({ decision: z.enum(['approve', 'deny']), note: z.string().trim().max(2000).optional() }).strict().parse(await body())
+      const result = runtime.research.resolveAttention(params.id, input.decision, input.note)
       runtime.requestPass()
       return result
     },

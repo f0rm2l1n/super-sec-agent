@@ -53,6 +53,8 @@ it('requires the project token, then establishes a clean authenticated session',
   expect(forwardedCookies).toContain('dsh-auth-')
   expect(forwardedCookies).not.toContain('v1.stale.invalid')
   expect(forwardedCookies.match(new RegExp(`${browserCookieName}=`, 'g'))).toHaveLength(1)
+  expect((await fetch(endpoint, { headers: { cookie, origin: `http://127.0.0.1:${webPort + 1}` } })).status).toBe(403)
+  expect((await fetch(endpoint, { headers: { cookie, origin: endpoint.slice(0, -1) } })).status).toBe(200)
   const clientModules = await fetch(`${endpoint}plugins/??@deepseek-ai/dsh-client-modules/client.js&rev=test`, { headers: { cookie } })
   expect(clientModules.status).toBe(200)
   expect(await clientModules.text()).toContain('/plugins/??@deepseek-ai/dsh-client-modules/client.js&rev=test')

@@ -271,8 +271,23 @@ export interface PolicyEffect {
 export type TicketEndBy = 'executor' | 'human'
 /** How a ticket ended: with its result, with its pull request merged or closed unmerged, with nothing to do, or stopped by a person. */
 export type TicketOutcome = 'completed' | 'merged' | 'closed' | 'dropped' | 'stopped'
-/** A question for a person; `triggerId` is the human message that raised it, whose conversation it goes back to. */
-export interface Attention { id: string; question: string; triggerId?: string }
+/** The kind of concrete human action an Executor may request while a Ticket is running. */
+export type AttentionKind = 'question' | 'authorization'
+export type AttentionAction = 'dynamic-experiment' | 'install-tool' | 'runtime-access' | 'network-access' | 'other'
+/** Structured context for a human action. Plain legacy questions are represented with `kind: question`. */
+export interface AttentionRequest {
+  kind: AttentionKind
+  question: string
+  action?: AttentionAction
+  target?: string
+  scope?: string
+  constraints?: string[]
+  candidateId?: string
+  roundId?: string
+  expiresAt?: string
+}
+/** A question or concrete approval request for a person; `triggerId` routes it to the original conversation. `kind` is optional for legacy records. */
+export interface Attention extends Omit<AttentionRequest, 'kind'> { id: string; kind?: AttentionKind; triggerId?: string }
 /** Ticket aggregate: an authorized work item with its assignments, channels, thread bindings, and inputs. */
 export interface Ticket {
   id: string

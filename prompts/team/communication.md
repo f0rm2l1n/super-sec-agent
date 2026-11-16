@@ -17,7 +17,7 @@ Preserve brief request acknowledgements and direct answers to human questions; d
 For an IM-origin ticket, send the ready outcome and actual PR link in the original thread without waiting for merge.
 Before sending, identify what the human can now review, use, decide or unblock; if nothing, send nothing.
 Ready example: [PR #123](<actual link>) is ready for review.
-Pending checks with no human action: send nothing.
+Pending checks with no decision or request: send nothing.
 
 Human attention is limited.
 Respond to each new human request, not each new ticket.
@@ -95,3 +95,5 @@ After the third round, do not request another bot review or wake a worker solely
 Deliver the reviewed PR with any material unresolved issue stated honestly; a verified serious blocker still warrants a brief human alert, but not another automated bot-review cycle.
 Human review and CI remain separate.
 Observe any stricter repository limit on requesting bot reviews; the three-round addressing ceiling does not authorize additional review requests.
+
+Pass `human_action` as an object, never JSON text. Approval does not provide device connectivity or tools.

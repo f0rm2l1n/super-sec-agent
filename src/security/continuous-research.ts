@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
 import { z } from 'zod'
-import { canRetry, latestAssignment, liveTicket, type Engine, type Ticket } from '../core/index.ts'
+import { encodedAttention } from '../attention.ts'
+import { canRetry, latestAssignment, liveTicket, type AttentionRequest, type Engine, type Ticket } from '../core/index.ts'
 import type { Store } from '../app/store.ts'
 import type { RoleModel } from '../policy.ts'
 import { record } from '../kv.ts'
@@ -21,12 +22,12 @@ const CandidateInput = z.object({
   status: z.enum(['open', 'active', 'confirmed', 'weakened', 'blocked', 'exhausted']),
   provenance: z.enum(['user', 'source', 'checkpoint', 'agent']),
 }).strict()
-type LegacyCandidate = { id?: string; question: string; rationale?: string; reason?: string; hypothesis?: string; evidencePlan?: string; stopCondition?: string; impact?: number; uncertainty?: number; feasibility?: number; priority?: number; status?: Candidate['status']; provenance?: Candidate['provenance']; blocker?: string }
+type LegacyCandidate = { id?: string; question: string; rationale?: string; reason?: string; hypothesis?: string; evidencePlan?: string; stopCondition?: string; impact?: number; uncertainty?: number; feasibility?: number; priority?: number; status?: Candidate['status']; provenance?: Candidate['provenance']; blocker?: string; attentionId?: string }
 export interface Candidate {
   id: string; question: string; rationale: string; hypothesis: string; evidencePlan: string; stopCondition: string
   impact: number; uncertainty: number; feasibility: number
   status: 'open' | 'active' | 'confirmed' | 'weakened' | 'blocked' | 'exhausted'
-  provenance: 'user' | 'source' | 'checkpoint' | 'agent'; blocker?: string
+  provenance: 'user' | 'source' | 'checkpoint' | 'agent'; blocker?: string; attentionId?: string
 }
 const normalizeCandidate = (raw: LegacyCandidate): Candidate => ({
   id: raw.id ?? `frontier-${randomUUID()}`,
@@ -38,11 +39,28 @@ const normalizeCandidate = (raw: LegacyCandidate): Candidate => ({
   impact: raw.impact ?? raw.priority ?? 3,
   uncertainty: raw.uncertainty ?? 3,
   feasibility: raw.feasibility ?? 3,
-  status: raw.status ?? 'open',
+  // A frontier supplied in `next` cannot carry a blocker or an Attention
+  // ticket. Treat a bare `blocked` status as an open proposal so malformed
+  // legacy state cannot strand the scheduler with an invisible candidate.
+  status: raw.status === 'blocked' && !raw.blocker ? 'open' : raw.status ?? 'open',
   provenance: raw.provenance ?? 'agent',
   ...(raw.blocker ? { blocker: raw.blocker } : {}),
+  ...(raw.attentionId ? { attentionId: raw.attentionId } : {}),
 })
 const frontierScore = (candidate: Candidate) => candidate.impact * 3 + candidate.uncertainty * 2 + candidate.feasibility
+const ResearchAttentionSchema = z.object({
+  kind: z.enum(['question', 'authorization']),
+  question: z.string().trim().min(5).max(1000),
+  action: z.enum(['dynamic-experiment', 'install-tool', 'runtime-access', 'network-access', 'other']).optional(),
+  target: z.string().trim().min(1).max(500).optional(),
+  scope: z.string().trim().min(1).max(1000).optional(),
+  constraints: z.array(z.string().trim().min(1).max(500)).max(12).optional(),
+  expires_at: z.string().datetime().optional(),
+}).strict().superRefine((value, context) => {
+  if (value.kind === 'authorization') {
+    for (const field of ['action', 'target', 'scope'] as const) if (!value[field]) context.addIssue({ code: 'custom', path: [field], message: `${field} is required for authorization Attention` })
+  }
+})
 export const ResearchCheckpointSchema = z.object({
   round_id: z.string().uuid(), summary: z.string().trim().min(10).max(4000),
   outcome: z.enum(['continue', 'blocked', 'exhausted']),
@@ -50,10 +68,11 @@ export const ResearchCheckpointSchema = z.object({
   evidence: z.array(z.object({ source: z.string(), path: z.string(), line: z.number().int().positive(), claim: z.string().trim().min(5).max(1500) }).strict()).max(30),
   next: z.array(CandidateInput).max(8),
   blocker: z.string().trim().min(5).max(1500).optional(),
+  attention: ResearchAttentionSchema.optional(),
 }).strict()
 type Checkpoint = z.infer<typeof ResearchCheckpointSchema>
 interface Round {
-  id: string; question: string; rationale: string; hypothesis: string; evidencePlan: string; stopCondition: string
+  id: string; candidateId?: string; question: string; rationale: string; hypothesis: string; evidencePlan: string; stopCondition: string
   startedAt: string; deadline?: string; timeoutMs: number | null
   baseline: Record<string, string>; inputId?: string; recoveries: number
 }
@@ -61,7 +80,7 @@ export interface Completed {
   id: string; question: string; rationale: string; hypothesis: string; evidencePlan: string; stopCondition: string
   at: string; summary: string; outcome: Checkpoint['outcome']
   artifacts: { path: string; sha256: string }[]; evidence: (Checkpoint['evidence'][number] & { revision: string })[]
-  next: Checkpoint['next']; blocker?: string
+  next: Checkpoint['next']; blocker?: string; attention?: AttentionRequest
 }
 interface WorkerState {
   ticketId: string
@@ -80,15 +99,51 @@ interface State {
   candidates: Candidate[]
   nextAt: string
   error?: string
+  authorizationEvents?: AuthorizationEvent[]
+}
+export interface AuthorizationEvent {
+  id: string; attentionId: string; ticketId: string; candidateId?: string; roundId?: string
+  decision: 'approved' | 'denied' | 'expired'; at: string; note?: string; request?: AttentionRequest
 }
 const stateKey = record<State>('continuous-security-research-v1')
 const digest = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex')
-const roots = ['knowledge', 'research', 'reports']
+const roots = ['knowledge', 'research', 'reports', 'experiments']
 const GAP_MS = 10_000
 const MAX_RESEARCH_RETRIES = 8
 const INITIAL_FRONTIER_QUESTION = '审阅当前项目研究前沿，并选择一个最有安全价值且尚未充分验证的方向。'
 const FRONTIER_REFRESH_QUESTION = '重新扫描已完成研究与未决问题，提出一个未重复且可用项目证据验证的新方向。'
 const questionKey = (question: string) => question.trim().toLocaleLowerCase().replace(/\s+/g, ' ')
+const frontierWaitError = (error: string | undefined, completed: Completed[]): boolean => {
+  if (!error) return false
+  if (error === '当前研究前沿已耗尽，需要新的项目证据或人工授权。') return true
+  let question = error
+  try {
+    const parsed = JSON.parse(error)
+    if (parsed?.kind === 'question' && typeof parsed.question === 'string') question = parsed.question
+  } catch { /* Older versions stored the blocker as plain text. */ }
+  return completed.some(round => round.outcome === 'blocked' && round.blocker === question)
+}
+const compactQuestion = (question: string) => question.trim().toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+/** Treat appended status notes and small rephrasings as the same blocked frontier. */
+const relatedQuestion = (left: string, right: string): boolean => {
+  const a = compactQuestion(left), b = compactQuestion(right)
+  if (a === b) return true
+  const shorter = Math.min(a.length, b.length)
+  if (shorter < 20) return false
+  if (a.includes(b) || b.includes(a)) return true
+  let prefix = 0
+  while (prefix < shorter && a[prefix] === b[prefix]) prefix++
+  return prefix / shorter >= 0.86
+}
+const candidateRank = (status: Candidate['status']) => status === 'active' ? 3 : status === 'blocked' ? 2 : 1
+const dedupeCandidates = (candidates: Candidate[]): Candidate[] => {
+  const byId = new Map<string, Candidate>()
+  for (const candidate of candidates) {
+    const previous = byId.get(candidate.id)
+    if (!previous || candidateRank(candidate.status) >= candidateRank(previous.status)) byId.set(candidate.id, candidate)
+  }
+  return [...byId.values()]
+}
 const frontierRefreshCandidate = () => normalizeCandidate({
   question: FRONTIER_REFRESH_QUESTION,
   rationale: '上一轮前沿已收敛；重新检查项目范围、版本差异、配置、部署和跨组件边界，避免重复已完成问题。',
@@ -136,7 +191,7 @@ export class ContinuousResearch {
   constructor(private readonly root: string, private readonly host: ContinuousHost) {}
   private state(): State {
     const saved = this.host.store.get(stateKey)
-    if (!saved) return { enabled: false, workers: [], completed: [], candidates: [], nextAt: new Date(0).toISOString() }
+    if (!saved) return { enabled: false, workers: [], completed: [], candidates: [], authorizationEvents: [], nextAt: new Date(0).toISOString() }
     const normalizeRound = (round: Round | undefined): Round | undefined => round ? {
       ...round,
       timeoutMs: round.timeoutMs === undefined
@@ -150,14 +205,22 @@ export class ContinuousResearch {
     // A crash or an older scheduler version can leave a frontier item marked
     // active after its worker disappeared. Reopen only those orphaned entries;
     // a candidate attached to a live round remains active until its checkpoint.
-    let candidates = saved.candidates.map(candidate => normalizeCandidate(candidate as LegacyCandidate)).map(candidate =>
+    let candidates = dedupeCandidates(saved.candidates.map(candidate => normalizeCandidate(candidate as LegacyCandidate)).map(candidate =>
       candidate.status === 'active' && !activeQuestions.has(candidate.question) ? { ...candidate, status: 'open' as const } : candidate)
+    )
+    // Do not revive a stale open rephrasing of a candidate that is already
+    // blocked on the same prerequisite. Such entries were emitted by older
+    // workers and otherwise create an authorization busy loop after restart.
+    const blockedTopics = candidates.filter(candidate => candidate.status === 'blocked').map(candidate => candidate.question)
+    candidates = candidates.filter(candidate => candidate.status !== 'open' || !blockedTopics.some(question => relatedQuestion(candidate.question, question)))
     // Versions before candidate-level blockers stored the blocker in the
     // scheduler-wide error field. Migrate that durable state when the error
     // exactly matches the completed blocked round, so upgrading does not
     // require a manual stop/start before other open work can resume.
     const legacyBlocked = saved.error
-      ? [...saved.completed].reverse().find(round => round.outcome === 'blocked' && round.blocker === saved.error)
+      ? [...saved.completed].reverse().find(round => round.outcome === 'blocked' && round.blocker === saved.error
+        && !candidates.some(candidate => candidate.status === 'open' && candidate.id === round.attention?.candidateId
+          && saved.authorizationEvents?.some(event => event.candidateId === candidate.id && event.decision === 'approved')))
       : undefined
     if (legacyBlocked) {
       const blockedKey = questionKey(legacyBlocked.question)
@@ -170,8 +233,59 @@ export class ContinuousResearch {
           stopCondition: legacyBlocked.stopCondition, status: 'blocked', provenance: 'agent', blocker: legacyBlocked.blocker }))
       }
     }
-    return { ...saved, ticketId, workers, candidates, error: legacyBlocked ? undefined : saved.error,
+    // Legacy blocked candidates used a plain Ticket question without a candidate reference. Attach the
+    // current matching Attention so a normal human answer can reopen that candidate after upgrade.
+    candidates = candidates.map(candidate => {
+      if (candidate.status !== 'blocked' || candidate.attentionId) return candidate
+      const match = workers.map(worker => this.host.store.tickets.get(worker.ticketId)?.attention)
+        .find(attention => attention?.question === candidate.blocker)
+      return match ? { ...candidate, attentionId: match.id } : candidate
+    })
+    const migratedBlockedTopics = candidates.filter(candidate => candidate.status === 'blocked').map(candidate => candidate.question)
+    candidates = candidates.filter(candidate => candidate.status !== 'open'
+      || !migratedBlockedTopics.some(question => relatedQuestion(candidate.question, question)))
+    const authorizationEvents = saved.authorizationEvents ?? []
+    const state: State = { ...saved, ticketId, workers, candidates, authorizationEvents, error: legacyBlocked ? undefined : saved.error,
       active: normalizeRound(workers.find(worker => worker.ticketId === ticketId)?.active ?? saved.active) }
+    // Recover approvals recorded by versions that reopened the candidate but
+    // left a frontier-wait error preventing tick() from dispatching it.
+    if (frontierWaitError(state.error, state.completed) && candidates.some(candidate => candidate.status === 'open'
+      && authorizationEvents.some(event => event.candidateId === candidate.id && event.decision === 'approved'))) delete state.error
+    return state
+  }
+  private restoreAttention(state: State): boolean {
+    // A previous worker could replace an authorization Attention with a plain
+    // question while repeatedly reporting the same blocker. Recover the last
+    // durable authorization so the operator still has an actionable decision
+    // after upgrading, unless that candidate already has a recorded decision.
+    const primaryTicket = state.ticketId ? this.host.store.tickets.get(state.ticketId) : undefined
+    const staleAuthorization = state.candidates.find(candidate => candidate.status === 'blocked'
+      && !(state.authorizationEvents ?? []).some(event => event.candidateId === candidate.id)
+      && state.completed.some(round => round.outcome === 'blocked' && round.attention?.kind === 'authorization'
+        && round.attention.candidateId === candidate.id))
+    const durableAuthorization = staleAuthorization
+      ? [...state.completed].reverse().find(round => round.outcome === 'blocked' && round.attention?.kind === 'authorization'
+        && round.attention.candidateId === staleAuthorization.id)?.attention
+      : undefined
+    if (primaryTicket && liveTicket(primaryTicket) && durableAuthorization
+      && (!primaryTicket.attention || primaryTicket.attention.kind !== 'authorization'
+        && relatedQuestion(primaryTicket.attention.question, staleAuthorization?.blocker ?? ''))) {
+      const request: AttentionRequest = { kind: 'authorization', question: durableAuthorization.question,
+        ...(durableAuthorization.action ? { action: durableAuthorization.action } : {}),
+        ...(durableAuthorization.target ? { target: durableAuthorization.target } : {}),
+        ...(durableAuthorization.scope ? { scope: durableAuthorization.scope } : {}),
+        ...(durableAuthorization.constraints ? { constraints: durableAuthorization.constraints } : {}),
+        ...(durableAuthorization.expiresAt ? { expiresAt: durableAuthorization.expiresAt } : {}),
+        ...(durableAuthorization.candidateId ? { candidateId: durableAuthorization.candidateId } : {}),
+        ...(durableAuthorization.roundId ? { roundId: durableAuthorization.roundId } : {}) }
+      const updated = this.host.engine.report(primaryTicket.id, { state: 'progress', summary: '恢复未决研究授权 Attention。', attention: request })
+      const attentionId = updated.attention?.id
+      if (attentionId) {
+        state.candidates = state.candidates.map(candidate => candidate.id === staleAuthorization!.id ? { ...candidate, attentionId } : candidate)
+        return true
+      }
+    }
+    return false
   }
   private save(state: State) {
     const primary = state.workers.find(worker => worker.ticketId === state.ticketId) ?? state.workers[0]
@@ -201,28 +315,28 @@ export class ContinuousResearch {
   private extendDeadlines(state: State) {
     for (const worker of state.workers) this.extendDeadline(worker)
   }
-  control(enabled: boolean) {
+  /** A normal question Attention is released by the worker's answer. Reopen only that candidate; authorization Attention requires an explicit decision. */
+  private reopenAnsweredQuestions(state: State): boolean {
+    const pending = new Set(state.workers.flatMap(worker => {
+      const attention = this.host.store.tickets.get(worker.ticketId)?.attention
+      return attention ? [attention.id] : []
+    }))
+    const resolved = new Set((state.authorizationEvents ?? []).map(event => event.attentionId))
+    let changed = false
+    state.candidates = state.candidates.map(candidate => {
+      if (candidate.status !== 'blocked' || !candidate.attentionId || pending.has(candidate.attentionId) || resolved.has(candidate.attentionId)) return candidate
+      const completed = [...state.completed].reverse().find(round => round.attention?.candidateId === candidate.id)
+      if (completed?.attention?.kind === 'authorization') return candidate
+      changed = true
+      return { ...candidate, status: 'open' as const, blocker: undefined, attentionId: undefined }
+    })
+    return changed
+  }
+  control(enabled: boolean, preserveBlockers = false) {
     if (enabled) this.host.validate()
     const state = this.state()
-    if (enabled && (!state.enabled || !!state.error)) {
+    if (enabled && !preserveBlockers && (!state.enabled || !!state.error)) {
       const primary = this.ensurePrimary(state)
-      const resumableBlockers = new Set(state.candidates.filter(candidate => candidate.status === 'blocked' && candidate.blocker)
-        .map(candidate => candidate.blocker!))
-      const requeueBlocked = !state.candidates.some(candidate => candidate.status === 'open')
-      if (requeueBlocked) {
-        // An explicit Start/resume is the operator's acknowledgement that a
-        // previously blocked frontier may be attempted again. Reopen it only
-        // when there is no independent open work, preserving the normal
-        // candidate-level isolation during autonomous scheduling.
-        state.candidates = state.candidates.map(candidate => candidate.status === 'blocked'
-          ? { ...candidate, status: 'open' as const, blocker: undefined } : candidate)
-        for (const worker of state.workers) {
-          const ticket = this.host.store.tickets.get(worker.ticketId)
-          if (ticket && liveTicket(ticket) && ticket.attention?.question && resumableBlockers.has(ticket.attention.question)) {
-            this.host.engine.report(ticket.id, { state: 'progress', summary: '研究恢复：重新排队此前阻塞的研究前沿。', question: null })
-          }
-        }
-      }
       const current = this.host.store.tickets.get(primary.ticketId)
       if (current && canRetry(current)) this.host.engine.retryTicket(current.id)
       for (const worker of state.workers) {
@@ -242,19 +356,34 @@ export class ContinuousResearch {
     const human = !!ticket && this.pending(ticket)
     const activeRounds = state.workers.filter(worker => worker.active)
     const active = primary?.active
-    const ticketAttention = state.workers.map(worker => this.host.store.tickets.get(worker.ticketId)?.attention).find(Boolean)
-    const blockedCandidate = state.candidates.find(candidate => candidate.status === 'blocked' && candidate.blocker)
-    const attention = ticketAttention ?? (blockedCandidate?.blocker ? { question: blockedCandidate.blocker, triggerId: undefined } : undefined)
+    const attentions = state.workers.flatMap(worker => {
+      const attention = this.host.store.tickets.get(worker.ticketId)?.attention
+      return attention ? [{ ...attention, kind: attention.kind ?? 'question' as const }] : []
+    })
+    const ticketAttention = attentions[0]
+    const resolvedAttentionIds = new Set((state.authorizationEvents ?? []).map(event => event.attentionId))
+    const blockedCandidate = state.candidates.find(candidate => candidate.status === 'blocked' && candidate.blocker
+      && (!candidate.attentionId || !resolvedAttentionIds.has(candidate.attentionId)))
+    const attention = ticketAttention
+      ? { ...ticketAttention, kind: ticketAttention.kind ?? 'question' as const }
+      : blockedCandidate?.blocker ? { id: blockedCandidate.attentionId ?? `candidate:${blockedCandidate.id}`, kind: 'question' as const, question: blockedCandidate.blocker } : undefined
+    const error = state.error ? encodedAttention(state.error)?.question ?? state.error : undefined
     return { enabled: state.enabled,
-      status: !state.enabled ? 'paused' : state.error ? 'blocked' : this.host.store.settings().paused ? 'system-paused' : human ? 'user-priority' : activeRounds.length ? 'researching' : 'waiting',
-      error: state.error, active: active ? { id: active.id, question: active.question, rationale: active.rationale,
+      status: !state.enabled ? 'paused' : error ? 'blocked' : this.host.store.settings().paused ? 'system-paused' : human ? 'user-priority' : activeRounds.length ? 'researching'
+        : attention && !state.candidates.some(candidate => candidate.status === 'open') ? 'blocked' : 'waiting',
+      error, active: active ? { id: active.id, question: active.question, rationale: active.rationale,
         hypothesis: active.hypothesis, evidencePlan: active.evidencePlan, stopCondition: active.stopCondition,
         startedAt: active.startedAt, deadline: active.deadline } : null,
-      attention: attention ? { question: attention.question, triggerId: attention.triggerId } : null,
+      attention: attention ? { id: attention.id, kind: attention.kind, question: attention.question, triggerId: attention.triggerId,
+        ...attention.action ? { action: attention.action } : {}, ...attention.target ? { target: attention.target } : {},
+        ...attention.scope ? { scope: attention.scope } : {}, ...attention.constraints ? { constraints: attention.constraints } : {},
+        ...attention.candidateId ? { candidateId: attention.candidateId } : {}, ...attention.roundId ? { roundId: attention.roundId } : {},
+        ...attention.expiresAt ? { expiresAt: attention.expiresAt } : {} } : null,
       workers: state.workers.map(worker => ({ ticketId: worker.ticketId, active: worker.active ? { id: worker.active.id, question: worker.active.question, startedAt: worker.active.startedAt, deadline: worker.active.deadline } : null, nextAt: worker.nextAt, error: worker.error })),
       activeRounds: activeRounds.map(worker => ({ ticketId: worker.ticketId, id: worker.active!.id, question: worker.active!.question })),
       nextAt: state.nextAt, rounds: state.completed.slice(-30), totalRounds: state.completed.length, candidates: state.candidates,
       capacity: this.capacity(),
+      authorizationEvents: state.authorizationEvents?.slice(-50) ?? [], attentions,
       schedule: schedule ? { id: schedule.schedule.id, name: schedule.schedule.name, localTime: schedule.localTime,
         maxWorkers: schedule.schedule.maxWorkers, model: schedule.schedule.model, nextTransitionAt: schedule.nextTransitionAt,
         timezone: schedule.schedule.timezone } : {},
@@ -314,15 +443,35 @@ export class ContinuousResearch {
     })
     if (args.outcome === 'continue' && (!artifacts.length || !evidence.length || !next.length)) throw new Error('Continuing requires changed artifacts, source evidence and next research frontier')
     if (args.outcome === 'blocked' && !args.blocker) throw new Error('A blocker must explain the missing prerequisite')
+    if (args.attention && args.outcome !== 'blocked') throw new Error('Attention requests require a blocked research checkpoint')
+    const previousAttention = this.host.store.tickets.get(ticketId)?.attention
+    const preserveAuthorization = args.outcome === 'blocked' && !args.attention && previousAttention?.kind === 'authorization'
+      && state.candidates.some(candidate => candidate.status === 'blocked' && candidate.attentionId === previousAttention.id
+        && relatedQuestion(candidate.question, active.question))
+    const requestedAttention: AttentionRequest | undefined = args.outcome === 'blocked'
+      ? args.attention
+        ? { kind: args.attention.kind, question: args.blocker!, ...(args.attention.action ? { action: args.attention.action } : {}),
+          ...(args.attention.target ? { target: args.attention.target } : {}), ...(args.attention.scope ? { scope: args.attention.scope } : {}),
+          ...(args.attention.constraints ? { constraints: args.attention.constraints } : {}), ...(args.attention.expires_at ? { expiresAt: args.attention.expires_at } : {}) }
+        : preserveAuthorization
+          ? { kind: 'authorization', question: previousAttention.question, ...(previousAttention.action ? { action: previousAttention.action } : {}),
+            ...(previousAttention.target ? { target: previousAttention.target } : {}), ...(previousAttention.scope ? { scope: previousAttention.scope } : {}),
+            ...(previousAttention.constraints ? { constraints: previousAttention.constraints } : {}), ...(previousAttention.expiresAt ? { expiresAt: previousAttention.expiresAt } : {}) }
+          : { kind: 'question', question: args.blocker! }
+      : undefined
+    const completedAttention = requestedAttention ? { ...requestedAttention,
+      ...(preserveAuthorization ? { candidateId: previousAttention!.candidateId, roundId: previousAttention!.roundId } : { candidateId: active.candidateId ?? active.id, roundId: active.id }) } : undefined
     const completed: Completed = { id: active.id, question: active.question, rationale: active.rationale, hypothesis: active.hypothesis,
       evidencePlan: active.evidencePlan, stopCondition: active.stopCondition, at: new Date().toISOString(), summary: args.summary,
-      outcome: args.outcome, artifacts, evidence, next, ...(args.blocker ? { blocker: args.blocker } : {}) }
+      outcome: args.outcome, artifacts, evidence, next, ...(args.blocker ? { blocker: args.blocker } : {}), ...(completedAttention ? { attention: completedAttention } : {}) }
+    let attentionId: string | undefined
     this.host.store.atomic(() => {
       // A blocked research question is an operator-visible prerequisite, but it
       // must not block the persistent research Session. Keep the assignment in
       // progress with an attention question so other open candidates can run.
-      this.host.engine.report(ticketId, { state: 'progress', summary: `研究检查点 ${active.id}: ${args.summary}`,
-        ...(args.outcome === 'blocked' ? { question: args.blocker } : {}) })
+      const updated = this.host.engine.report(ticketId, { state: 'progress', summary: `研究检查点 ${active.id}: ${args.summary}`,
+        ...(completedAttention ? { attention: completedAttention } : {}) })
+      attentionId = updated.attention?.id
       state.completed.push(completed); worker.active = undefined; worker.error = undefined; worker.failureCount = 0
       worker.nextAt = new Date(Date.now() + GAP_MS).toISOString(); state.nextAt = worker.nextAt
       const activeOthers = state.candidates.filter(candidate => candidate.status === 'active' && candidate.question !== active.question)
@@ -335,15 +484,20 @@ export class ContinuousResearch {
         ...(previous ?? normalizeCandidate({ id: active.id, question: active.question, rationale: active.rationale,
           hypothesis: active.hypothesis, evidencePlan: active.evidencePlan, stopCondition: active.stopCondition,
           status: 'blocked', provenance: 'agent' })),
-        status: 'blocked' as const, blocker: args.blocker,
+        status: 'blocked' as const, blocker: args.blocker, ...(attentionId ? { attentionId } : {}),
       } : undefined
       // A blocked round must not be immediately selected again if the agent
       // echoed its current question in `next`; retain the candidate as a
       // blocked item with the operator-visible prerequisite instead.
       const blockedQuestions = new Set(existingBlocked.map(candidate => questionKey(candidate.question)))
+      const blockedTopics = [...existingBlocked.map(candidate => candidate.question), ...(blocked ? [blocked.question] : [])]
       const eligibleNext = next.filter(candidate => questionKey(candidate.question) !== questionKey(active.question)
-        && !blockedQuestions.has(questionKey(candidate.question)))
-      state.candidates = [...eligibleNext, ...activeOthers, ...existingOpen, ...existingBlocked, ...(blocked ? [blocked] : [])]
+        && !blockedQuestions.has(questionKey(candidate.question))
+        && !blockedTopics.some(question => relatedQuestion(candidate.question, question)))
+      const mergedCandidates = dedupeCandidates([...eligibleNext, ...activeOthers, ...existingOpen, ...existingBlocked, ...(blocked ? [blocked] : [])])
+      const mergedBlockedTopics = mergedCandidates.filter(candidate => candidate.status === 'blocked').map(candidate => candidate.question)
+      state.candidates = mergedCandidates.filter(candidate => candidate.status !== 'open'
+        || !mergedBlockedTopics.some(question => relatedQuestion(candidate.question, question)))
       if (args.outcome === 'blocked' && !state.candidates.some(candidate => candidate.status === 'open')
         && !state.workers.some(item => item.active)
         && !state.completed.some(round => questionKey(round.question) === questionKey(FRONTIER_REFRESH_QUESTION))) {
@@ -358,12 +512,49 @@ export class ContinuousResearch {
     this.archive(completed)
     return { recorded: true, round_id: active.id, next: 'End this turn now. The host schedules the next round; do not call yourself or continue the next question.' }
   }
+  resolveAttention(attentionId: string, decision: 'approve' | 'deny', note?: string) {
+    const state = this.state()
+    const worker = state.workers.find(item => this.host.store.tickets.get(item.ticketId)?.attention?.id === attentionId)
+    const ticket = worker ? this.host.store.tickets.get(worker.ticketId) : this.host.ticket()
+    const attention = ticket?.attention
+    if (!ticket || !attention || attention.id !== attentionId) throw new Error('Research Attention not found or already resolved')
+    if (attention.kind !== 'authorization') throw new Error('Only authorization Attention can be approved or denied')
+    if (!liveTicket(ticket)) throw new Error('Research Ticket has ended')
+    const bound = !!attention.candidateId || !!attention.roundId
+    const candidate = bound ? state.candidates.find(item => item.id === attention.candidateId && item.attentionId === attentionId) : undefined
+    if (bound && (!candidate || candidate.status !== 'blocked' || !attention.roundId
+      || !state.completed.some(round => round.id === attention.roundId && round.attention?.candidateId === candidate.id))) {
+      throw new Error('The authorization is no longer bound to its blocked research candidate and round')
+    }
+    if (attention.expiresAt && Date.now() >= Date.parse(attention.expiresAt)) decision = 'deny'
+    const resolved: AuthorizationEvent = { id: randomUUID(), attentionId, ticketId: ticket.id,
+      ...(candidate ? { candidateId: candidate.id, roundId: attention.roundId } : {}), request: { ...attention, kind: 'authorization' },
+      decision: attention.expiresAt && Date.now() >= Date.parse(attention.expiresAt) ? 'expired' : decision === 'approve' ? 'approved' : 'denied',
+      at: new Date().toISOString(), ...(note?.trim() ? { note: note.trim().slice(0, 2000) } : {}) }
+    this.host.store.atomic(() => {
+      state.authorizationEvents = [...state.authorizationEvents ?? [], resolved].slice(-500)
+      const approved = resolved.decision === 'approved'
+      state.candidates = state.candidates.map(item => item.id === candidate?.id
+        ? approved ? { ...item, status: 'open' as const, blocker: undefined, attentionId: undefined } : { ...item, status: 'blocked' as const }
+        : item)
+      const attentionError = state.error === attention.question || !!state.error && encodedAttention(state.error)?.question === attention.question
+      if (approved && (frontierWaitError(state.error, state.completed) || attentionError)) delete state.error
+      // Retry eligibility belongs to the blocked report. Updating it to progress
+      // first makes the same retry invalid and rolls back the operator's decision.
+      if (approved && canRetry(ticket)) this.host.engine.retryTicket(ticket.id)
+      this.host.engine.report(ticket.id, { state: 'progress', summary: `研究授权${approved ? '已批准' : resolved.decision === 'expired' ? '已过期' : '已拒绝'}：${attention.question}`, attention: null })
+      this.host.engine.note(ticket.id, `RESEARCH_ATTENTION_RESOLUTION\n${JSON.stringify({ decision: resolved.decision, candidate_id: candidate?.id, round_id: resolved.roundId, action: attention.action, target: attention.target, scope: attention.scope, constraints: attention.constraints ?? [], note: resolved.note ?? '' })}`)
+      this.save(state)
+    })
+    return { attentionId, candidateId: candidate?.id, roundId: resolved.roundId, status: resolved.decision }
+  }
   private archive(round: Completed) {
     const directory = join(this.root, 'runs', 'continuous-research'); mkdirSync(directory, { recursive: true })
     writeFileSync(join(directory, `${round.id}.json`), `${JSON.stringify(round, null, 2)}\n`)
   }
   tick(): void {
-    const state = this.state(), activeCount = state.workers.filter(worker => worker.active).length
+    const state = this.state(), restored = this.restoreAttention(state), reopened = this.reopenAnsweredQuestions(state), activeCount = state.workers.filter(worker => worker.active).length
+    if (reopened || restored) this.save(state)
     if ((!state.enabled && !activeCount) || state.error || this.host.store.settings().paused) return
     try {
       const primary = state.enabled ? this.ensurePrimary(state) : this.primary(state)
@@ -409,7 +600,8 @@ export class ContinuousResearch {
         // or retry the lane as before.
         const internalBlockedAttention = assignment?.report?.state === 'progress'
           && !!ticket.attention?.question
-          && state.candidates.some(candidate => candidate.status === 'blocked' && candidate.blocker === ticket.attention?.question)
+          && state.candidates.some(candidate => candidate.status === 'blocked'
+            && (candidate.attentionId === ticket.attention?.id || candidate.blocker === ticket.attention?.question))
         const failure = ticket.delivery?.error ?? (internalBlockedAttention ? undefined : (ticket.attention?.question ?? (['blocked', 'failed'].includes(assignment?.report?.state ?? '') ? assignment?.report?.summary : undefined)))
         if (failure) {
           if (retryableFailure(failure) && canRetry(ticket) && worker.failureCount < MAX_RESEARCH_RETRIES) {
@@ -485,7 +677,7 @@ export class ContinuousResearch {
           // The worker Session persists across rounds; select the route at the
           // round boundary so schedule changes actually affect the next request.
           this.host.selectModel?.(ticket.id, schedule?.schedule.model ?? null)
-          worker.active = { id: randomUUID(), question: candidate.question, rationale: candidate.rationale, hypothesis: candidate.hypothesis,
+          worker.active = { id: randomUUID(), candidateId: candidate.id, question: candidate.question, rationale: candidate.rationale, hypothesis: candidate.hypothesis,
             evidencePlan: candidate.evidencePlan, stopCondition: candidate.stopCondition, startedAt: new Date().toISOString(),
             ...(timeoutMs === null ? {} : { deadline: new Date(Date.now() + timeoutMs).toISOString() }), timeoutMs, baseline: this.snapshot(), recoveries: 0 }
           mkdirSync(join(this.root, 'research', 'rounds', worker.active.id), { recursive: true })
@@ -501,7 +693,7 @@ export class ContinuousResearch {
               ? '把结果写入 knowledge/ 或 research/ 或 reports/，记录源码版本、路径/行号、事实/假设/反证、未知和安全意义。不得修改 sources/、project.json、SCOPE.md、sources.lock.json，不读 evaluation/。'
               : `这是并发研究槽。为避免多个 worker 覆盖共享知识，每个结果文件必须写入 research/rounds/${active.id}/；不要直接修改 knowledge/、reports/ 或其他 round 的文件。记录源码版本、路径/行号、事实/假设/反证、未知和安全意义。`,
             '必须用 orchestrator_research_checkpoint 提交本 round_id、实际变化的 artifacts、源码 evidence，以及结构化的 next 研究前沿：问题、理由、假设、证据计划、停止条件、影响、未知和可行性。',
-            '检查点成功后立即结束本轮，不要自行循环。若遇到真正前置阻塞，checkpoint outcome=blocked 并说明最小求助条件；宿主会保留求助并继续其他 open 前沿，不要重复这个 blocked 问题。若当前静态前沿暂时收敛，checkpoint outcome=exhausted，宿主会安排一次新的前沿扫描；前沿扫描仍无新方向时才会暂停并等待新的项目证据或人工授权。',
+            '检查点成功后立即结束本轮，不要自行循环。若遇到真正前置阻塞，checkpoint outcome=blocked 并说明最小求助条件；需要动态实验、安装工具或访问 runtime 时，同时提交结构化 attention（kind=authorization，写明 action、target、scope、constraints），宿主会保留求助并继续其他 open 前沿，不要重复这个 blocked 问题。若当前静态前沿暂时收敛，checkpoint outcome=exhausted，宿主会安排一次新的前沿扫描；前沿扫描仍无新方向时才会暂停并等待新的项目证据或人工 Attention。',
             '用户新问题/订正立即优先，通过 orchestrator_report ready + reply_to_trigger_id 回答用户，然后再恢复本轮；不得把本轮研究当作用户问题的答案。',
             '若这是恢复：先检查已有文件与会话，保留已完成工作，补交检查点，不重做。',
           ].join('\n')

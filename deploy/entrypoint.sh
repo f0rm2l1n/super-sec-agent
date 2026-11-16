@@ -117,17 +117,19 @@ EOF
 fi
 
 cleanup() {
-  kill "$dsh_pid" 2>/dev/null || true
-  wait "$dsh_pid" 2>/dev/null || true
+  [ -z "${proxy_pid:-}" ] || kill "$proxy_pid" 2>/dev/null || true
+  [ -z "${dsh_pid:-}" ] || kill "$dsh_pid" 2>/dev/null || true
+  wait 2>/dev/null || true
 }
-trap cleanup INT TERM EXIT
+trap cleanup EXIT
+trap 'exit 0' INT TERM
 
 dsh "$profile" --no-open &
 dsh_pid=$!
 
 ready=0
 for _ in $(seq 1 60); do
-  if node -e "fetch('http://127.0.0.1:${backend_port}/').then(() => process.exit(0)).catch(() => process.exit(1))"; then
+  if node -e "fetch('http://127.0.0.1:${backend_port}/', { signal: AbortSignal.timeout(2000) }).then(() => process.exit(0)).catch(() => process.exit(1))"; then
     ready=1
     break
   fi
@@ -142,4 +144,11 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
-exec node "$app_dir/scripts/dsh-superagent-web-auth.mjs"
+node "$app_dir/scripts/dsh-superagent-web-auth.mjs" &
+proxy_pid=$!
+# Exit if either service dies so Compose restarts the application.
+while kill -0 "$dsh_pid" 2>/dev/null && kill -0 "$proxy_pid" 2>/dev/null; do
+  sleep 1
+done
+echo 'DSH or the web gateway exited; restarting the application container.' >&2
+exit 1

@@ -9,7 +9,7 @@ it('keeps a failed question editable, retries with the same ID, and opens the re
   const local = { workspace: '/research/sample', id: 'sample', name: 'Sample' }
   server.setup = { ...server.setup, accounts: null, local }
   server.research = { ...local, attention: null, sources: [{ id: 'main', kind: 'git', path: 'sources/main', revision: 'a'.repeat(40), role: 'subject' }],
-    continuous: { enabled: false, status: 'paused', active: null, workers: [], activeRounds: [], capacity: 1, error: undefined, attention: null, rounds: [], totalRounds: 0, candidates: [], nextAt: new Date(0).toISOString(),
+    continuous: { enabled: false, status: 'paused', active: null, workers: [], activeRounds: [], capacity: 1, error: undefined, attention: null, rounds: [], totalRounds: 0, candidates: [], authorizationEvents: [], attentions: [], nextAt: new Date(0).toISOString(),
       schedule: {} },
     inbox: { pending: 0, errors: 0 }, messages: [], sessions: [{ ticketId: 'local-ticket', sessionId: 'worker-local-ticket', title: 'Sample security' }] }
   await mount()
@@ -45,7 +45,7 @@ it('shows the active special schedule and its host-enforced concurrency in the r
   const local = { workspace: '/research/sample', id: 'sample', name: 'Sample' }
   server.setup = { ...server.setup, accounts: null, local }
   server.research = { ...local, attention: null, sources: [],
-    continuous: { enabled: true, status: 'waiting', active: null, workers: [], activeRounds: [], capacity: 4, error: undefined, attention: null, rounds: [], totalRounds: 0, candidates: [],
+    continuous: { enabled: true, status: 'waiting', active: null, workers: [], activeRounds: [], capacity: 4, error: undefined, attention: null, rounds: [], totalRounds: 0, candidates: [], authorizationEvents: [], attentions: [],
       nextAt: new Date(0).toISOString(), schedule: { id: 'night', name: '夜间算力', timezone: 'Asia/Shanghai', localTime: '01:30', maxWorkers: 4,
         model: { provider: 'deepseek', model: 'deepseek-flash' }, nextTransitionAt: '2026-11-15T06:30:00.000Z' } },
     inbox: { pending: 0, errors: 0 }, messages: [], sessions: [] }
@@ -53,4 +53,24 @@ it('shows the active special schedule and its host-enforced concurrency in the r
   expect(text()).toContain('夜间算力')
   expect(text()).toContain('研究并发 4')
   expect(text()).toContain('当前窗口至')
+})
+
+it('shows one structured authorization card and pauses scheduling even when blocked', async () => {
+  const local = { workspace: '/research/sample', id: 'sample', name: 'Sample' }
+  const attention = { id: 'device-request', triggerId: undefined, kind: 'authorization' as const, question: '请提供隔离设备的访问方式。',
+    action: 'runtime-access' as const, target: 'device-1', scope: '仅查询运行日志', constraints: ['只读'] }
+  server.setup = { ...server.setup, accounts: null, local }
+  server.research = { ...local, attention, sources: [],
+    continuous: { enabled: true, status: 'blocked', active: null, workers: [], activeRounds: [], capacity: 1,
+      error: attention.question, attention, attentions: [attention], rounds: [], totalRounds: 56, candidates: [], authorizationEvents: [],
+      nextAt: new Date(0).toISOString(), schedule: {} }, inbox: { pending: 0, errors: 0 }, messages: [], sessions: [] }
+  await mount()
+  expect(document.querySelectorAll('.dt-research-attention')).toHaveLength(1)
+  expect(text()).toContain('device-1')
+  expect(text()).toContain('仅查询运行日志')
+  await click(zh['research.pause'])
+  expect(server.requests.filter(request => request.path === 'research/continuous').at(-1)?.body).toEqual({ enabled: false })
+  await click(zh['research.approve'])
+  expect(server.requests.filter(request => request.path.endsWith('/resolve')).at(-1)?.body).toEqual({ decision: 'approve' })
+  expect(document.querySelectorAll('.dt-research-attention')).toHaveLength(0)
 })

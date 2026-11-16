@@ -29,7 +29,11 @@ export function ticketCard(ticket: Ticket) {
   const { attention } = ticket
   return { ticket_id: ticket.id, title: ticket.title, state: cardState(ticket), strength: ticket.mandate.strength,
     ...(pullOf(ticket) ? { pr_number: pullOf(ticket) } : {}), ...(ended ? { ended } : {}),
-    ...(attention ? { attention: { question: attention.question, ...attention.triggerId ? { trigger_id: attention.triggerId } : {} } } : {}),
+    ...(attention ? { attention: { kind: attention.kind ?? 'question', question: attention.question,
+      ...attention.action ? { action: attention.action } : {}, ...attention.target ? { target: attention.target } : {},
+      ...attention.scope ? { scope: attention.scope } : {}, ...attention.constraints ? { constraints: attention.constraints } : {},
+      ...attention.candidateId ? { candidate_id: attention.candidateId } : {}, ...attention.roundId ? { round_id: attention.roundId } : {},
+      ...attention.expiresAt ? { expires_at: attention.expiresAt } : {}, ...attention.triggerId ? { trigger_id: attention.triggerId } : {} } } : {}),
     preview: preview(latestReport(ticket)?.summary ?? ''), read: `ticket/${ticket.id}` }
 }
 /** Strips `policyVersion`, an internal hash that callers never query by. */

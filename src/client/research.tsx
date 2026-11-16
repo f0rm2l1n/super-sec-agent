@@ -14,6 +14,7 @@ export function LocalResearchPanel() {
   const [busy, setBusy] = useState(false)
   const [failure, setFailure] = useState('')
   const [controlling, setControlling] = useState(false)
+  const [resolving, setResolving] = useState<string>()
   const [sent, setSent] = useState(false)
   // Keep the ID after a failed/ambiguous network response so retry cannot create a second request.
   const pending = useRef<{ id: string; text: string; kind: typeof kind }>()
@@ -39,6 +40,17 @@ export function LocalResearchPanel() {
     catch (error) { setFailure(errorText(error)) }
     finally { setControlling(false) }
   }
+  const resolveAttention = async (id: string, decision: 'approve' | 'deny') => {
+    setResolving(id); setFailure('')
+    try { await call('POST research/attention/:id/resolve', { id, body: { decision } }); await reload() }
+    catch (error) { setFailure(errorText(error)) }
+    finally { setResolving(undefined) }
+  }
+  const attentions = [...new Map([
+    ...(data?.continuous.attentions ?? []),
+    ...(data?.continuous.attention ? [data.continuous.attention] : []),
+    ...(data?.attention ? [data.attention] : []),
+  ].map(attention => [attention.id, attention])).values()]
   return <div className="dt-research">
     <section className="dt-research-hero">
       <div className="dt-research-hero-copy">
@@ -85,21 +97,27 @@ export function LocalResearchPanel() {
 
       <section className="dt-research-card dt-research-status">
         <div className="dt-research-card-head"><div><p className="dt-research-kicker">{t('research.continuous')}</p><h3>{t(`research.loop.${data.continuous.status}` as Parameters<typeof t>[0])}</h3></div>
-          <Button variant="outline" disabled={controlling} onClick={() => { void continuous(!data.continuous.enabled || !!data.continuous.error) }}>
+          <Button variant="outline" disabled={controlling} onClick={() => { void continuous(!data.continuous.enabled) }}>
             {t(controlling ? 'research.working' : !data.continuous.enabled
               ? data.continuous.error ? 'research.resume' : 'research.start' : 'research.pause')}
           </Button>
         </div>
-        {data.continuous.attention && data.continuous.attention.question !== data.attention?.question && <div className="dt-research-attention" role="alert">
+        {attentions.map(researchAuthorization => <div className="dt-research-attention" role="alert" key={researchAuthorization.id}>
           <p className="dt-research-card-caption">{t('research.attention')}</p>
-          <MarkdownLite text={data.continuous.attention.question} />
-          <Hint>{t('research.attentionHelp')}</Hint>
-        </div>}
-        {data.attention && <div className="dt-research-attention" role="alert">
-          <p className="dt-research-card-caption">{t('research.attention')}</p>
-          <MarkdownLite text={data.attention.question} />
-          <Hint>{t('research.attentionHelp')}</Hint>
-        </div>}
+          <MarkdownLite text={researchAuthorization.question} />
+          <div className="dt-research-attention-meta">
+            {researchAuthorization.action && <span>{t('research.action')}: {t(`research.action.${researchAuthorization.action}` as Parameters<typeof t>[0])}</span>}
+            {researchAuthorization.target && <span>{t('research.target')}: {researchAuthorization.target}</span>}
+            {researchAuthorization.scope && <span>{t('research.scope')}: {researchAuthorization.scope}</span>}
+            {researchAuthorization.expiresAt && <span>{t('research.expires')}: <When at={researchAuthorization.expiresAt} /></span>}
+          </div>
+          {researchAuthorization.constraints?.length ? <ul className="dt-research-attention-constraints">{researchAuthorization.constraints.map(item => <li key={item}>{item}</li>)}</ul> : null}
+          <Hint>{t(researchAuthorization.kind === 'authorization' ? 'research.authorizationHelp' : 'research.attentionHelp')}</Hint>
+          {researchAuthorization.kind === 'authorization' && <div className="dt-research-form-foot">
+            <Button variant="primary" disabled={!!resolving} onClick={() => { void resolveAttention(researchAuthorization.id, 'approve') }}>{t(resolving === researchAuthorization.id ? 'research.working' : 'research.approve')}</Button>
+            <Button variant="outline" disabled={!!resolving} onClick={() => { void resolveAttention(researchAuthorization.id, 'deny') }}>{t('research.deny')}</Button>
+          </div>}
+        </div>)}
         {data.continuous.active && <div className="dt-research-proposal">
           <p className="dt-research-card-caption">{t('research.proposal')}</p>
           <h4>{data.continuous.active.question}</h4>
@@ -110,7 +128,7 @@ export function LocalResearchPanel() {
             <div><dt>{t('research.stopCondition')}</dt><dd>{data.continuous.active.stopCondition}</dd></div>
           </dl>
         </div>}
-        {data.continuous.error && <p role="alert" className="dt-error">{data.continuous.error}</p>}
+        {data.continuous.error && !attentions.some(attention => attention.question === data.continuous.error) && <p role="alert" className="dt-error">{data.continuous.error}</p>}
         <Hint>{t('research.continuousHelp')}</Hint>
         {'id' in data.continuous.schedule && <div className="dt-research-schedule" role="status">
           <p className="dt-research-card-caption">{t('research.scheduleActive')}</p>

@@ -1,8 +1,8 @@
-#!/bin/sh
-set -eu
+#!/bin/bash
+set -euo pipefail
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-VERSION=${1:-v$(node -p "require('./package.json').version")}
+VERSION=${1:-v$(node -p "require('$ROOT/package.json').version")}
 VERSION=${VERSION#v}
 TAG="v${VERSION}"
 IMAGE_REPOSITORY=${SUPERAGENT_IMAGE_REPOSITORY:-superagent-sec-runtime}

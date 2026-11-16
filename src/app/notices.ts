@@ -118,8 +118,8 @@ export function resultRelay(ticket: Ticket, state: string, text: string, replyTo
  * routine `progress` reports without `answers` stay internal.
  * @returns The steering `Relay`, or `undefined` when the report is not relayed to the main Session.
  */
-export function reportRelay(ticket: Ticket, report: Pick<WorkerReport, 'state' | 'summary' | 'question' | 'answers'>): Relay | undefined {
-  const asked = report.question ? ticket.attention : undefined
+export function reportRelay(ticket: Ticket, report: Pick<WorkerReport, 'state' | 'summary' | 'question' | 'attention' | 'answers'>): Relay | undefined {
+  const asked = report.question || report.attention ? ticket.attention : undefined
   if (asked) {
     return { id: `attention:${ticket.id}:${asked.id}`,
       text: JSON.stringify({ kind: 'worker_attention', ticket: brief(ticket), state: report.state, read: `ticket/${ticket.id}/result` }) }

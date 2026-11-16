@@ -19,7 +19,8 @@ interface Paged { offset?: number; limit?: number }
 type Delivery = 'injected' | 'pending'
 
 export interface Api {
-  'POST research/continuous': { body: { enabled: boolean }; response: LocalResearchView['continuous'] }
+  'POST research/continuous': { body: { enabled: boolean; preserveBlockers?: boolean }; response: LocalResearchView['continuous'] }
+  'POST research/attention/:id/resolve': { body: { decision: 'approve' | 'deny'; note?: string }; response: { attentionId: string; candidateId?: string; roundId?: string; status: 'approved' | 'denied' | 'expired' } }
   'GET research': { response: LocalResearchView | null }
   'POST research/messages': { body: { id: string; text: string; kind: 'question' | 'correction' }; response: { id: string; duplicate: boolean } }
   'GET state': { response: StateView }

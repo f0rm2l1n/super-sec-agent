@@ -1,3 +1,4 @@
+name: superagent-sec-${SUPERAGENT_PROJECT_ID:-default}
 services:
   superagent-sec:
     platform: ${SUPERAGENT_CONTAINER_PLATFORM:-}
@@ -6,8 +7,12 @@ services:
       dockerfile: deploy/App.Dockerfile
       args:
         RUNTIME_IMAGE: ${SUPERAGENT_RUNTIME_IMAGE:-superagent-sec-runtime:stable}
+        HTTP_PROXY: ${SUPERAGENT_HTTP_PROXY:-}
+        HTTPS_PROXY: ${SUPERAGENT_HTTPS_PROXY:-}
+        NO_PROXY: ${SUPERAGENT_NO_PROXY:-127.0.0.1,localhost}
     image: ${SUPERAGENT_APP_IMAGE:-superagent-sec-app:local}
     restart: unless-stopped
+    init: true
     # Optional operator-managed secrets/configuration. This file is never
     # copied into the image or committed to the application checkout.
     env_file:
@@ -28,6 +33,7 @@ services:
       DSH_SUPERAGENT_WEB_HOST: 0.0.0.0
       DSH_SUPERAGENT_WEB_PORT: 3184
       DSH_SUPERAGENT_WEB_ADVERTISE_HOST: ${SUPERAGENT_WEB_ADVERTISE_HOST:-127.0.0.1}
+      DSH_SUPERAGENT_WEB_ADVERTISE_PORT: ${SUPERAGENT_HOST_WEB_PORT:-3184}
       # If a custom key is supplied, this must be a path visible inside the
       # container. The default is empty so the persistent mounted key is
       # generated automatically on first start.

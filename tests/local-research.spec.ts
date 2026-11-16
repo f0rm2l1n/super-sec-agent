@@ -162,6 +162,56 @@ it('surfaces a research worker toolchain request on the Superagent-sec page', as
   expect(view.continuous.attention).toMatchObject({ question })
 })
 
+it('preserves structured generic Attention without treating it as a research approval', async () => {
+  const root = workspace(), { h, sessionId } = await continuousWorker(root)
+  await h.runTool(sessionId, 'orchestrator_report', {
+    state: 'progress', summary: '需要人工确认一次临时 runtime 访问。',
+    human_action: { kind: 'authorization', question: '允许访问临时 runtime？', action: 'runtime-access', target: 'runtime-1', scope: '本次工单', constraints: ['只读'] },
+  })
+  expect(h.runtime.research!.view().attention).toMatchObject({ kind: 'authorization', action: 'runtime-access', target: 'runtime-1' })
+  expect((await h.runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: '确认完成。', human_action: null })).reported).toBe(true)
+})
+
+it('decodes JSON-encoded help from old sessions and resolves a ticket-scoped authorization once', async () => {
+  const root = workspace(), { h, ticket, sessionId } = await continuousWorker(root)
+  const request = { kind: 'authorization' as const, question: '请提供隔离设备的访问方式。', action: 'runtime-access' as const,
+    target: 'device-1', scope: '仅查询运行日志', constraints: ['只读'] }
+  await h.runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: '设备当前不可达。', human_action: JSON.stringify(request) })
+  expect(h.runtime.research!.view().attention).toMatchObject(request)
+  // Simulate the legacy record already stored by the old tool implementation.
+  const saved = h.runtime.store.tickets.get(ticket.id)!
+  saved.attention = { id: 'legacy-runtime-help', question: JSON.stringify(request) }
+  h.runtime.store.tickets.save(saved)
+  const key = 'continuous-security-research-v1'
+  const state = h.runtime.store.get<Record<string, unknown>>(key)!
+  h.runtime.store.set(key, { ...state, error: JSON.stringify(request) })
+  expect(h.runtime.research!.continuous.view().error).toBe(request.question)
+  expect(h.runtime.research!.continuous.view().attentions).toEqual([expect.objectContaining(request)])
+  await h.api('POST', 'research/continuous', { enabled: false })
+  await h.api('POST', 'research/continuous', { enabled: true, preserveBlockers: true })
+  expect(h.runtime.research!.continuous.view().error).toBe(request.question)
+  expect(h.runtime.research!.continuous.view().attention).toMatchObject(request)
+  expect(h.runtime.research!.continuous.view().authorizationEvents).toHaveLength(0)
+  expect((await h.api('POST', 'research/attention/legacy-runtime-help/resolve', { decision: 'approve' })).body).toMatchObject({ status: 'approved' })
+  expect(h.runtime.research!.continuous.view().error).toBeUndefined()
+  expect(h.runtime.research!.continuous.view().authorizationEvents.at(-1)).toMatchObject({ ticketId: ticket.id, request })
+  expect((await h.api('POST', 'research/attention/legacy-runtime-help/resolve', { decision: 'approve' })).status).toBe(409)
+})
+
+it('rejects an authorization whose candidate and round binding no longer match', async () => {
+  const root = workspace(), { h, ticket, sessionId } = await continuousWorker(root)
+  const active = h.runtime.research!.continuous.view().active!
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
+    round_id: active.id, summary: '需要明确批准隔离实验。', outcome: 'blocked', artifacts: [], evidence: [], next: [], blocker: '需要批准一次隔离实验。',
+    attention: { kind: 'authorization', question: '需要批准一次隔离实验。', action: 'dynamic-experiment', target: 'device-1', scope: '只读日志' },
+  })
+  const saved = h.runtime.store.tickets.get(ticket.id)!
+  saved.attention!.roundId = randomUUID()
+  h.runtime.store.tickets.save(saved)
+  expect((await h.api('POST', `research/attention/${saved.attention!.id}/resolve`, { decision: 'approve' })).status).toBe(409)
+  expect(h.runtime.research!.continuous.view().authorizationEvents).toHaveLength(0)
+})
+
 function checkpoint(h: Host, root: string) {
   writeFileSync(join(root, 'knowledge/mechanisms/identity.md'), 'Confirmed: auth.c is the pinned entry. Missing implementation remains an explicit unknown.\n')
   return {
@@ -205,6 +255,32 @@ it('autonomously advances from changed knowledge to the next question without a 
   expect(h.controller.prompt).not.toHaveBeenCalled()
 })
 
+it('reopens a bare blocked frontier proposal instead of stranding the scheduler', async () => {
+  const root = workspace(), { h, sessionId } = await continuousWorker(root)
+  const first = checkpoint(h, root)
+  first.next[0]!.status = 'blocked'
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', first)
+  expect(h.runtime.research!.continuous.view().candidates).toEqual(expect.arrayContaining([
+    expect.objectContaining({ question: first.next[0]!.question, status: 'open' }),
+  ]))
+})
+
+it('drops a rephrased blocked frontier and schedules one fresh scan', async () => {
+  const root = workspace(), { h, sessionId } = await continuousWorker(root)
+  const active = h.runtime.research!.continuous.view().active!
+  const repeated = { question: `${active.question}（授权请求已提交）`, rationale: active.rationale,
+    hypothesis: active.hypothesis, evidencePlan: active.evidencePlan, stopCondition: active.stopCondition,
+    impact: 5, uncertainty: 4, feasibility: 1, status: 'open' as const, provenance: 'agent' as const }
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
+    round_id: active.id, summary: '该方向需要操作者授权。', outcome: 'blocked', artifacts: [], evidence: [], next: [repeated],
+    blocker: '需要操作者授权一次隔离动态验证。',
+    attention: { kind: 'authorization', question: '需要操作者授权一次隔离动态验证。', action: 'dynamic-experiment', target: '隔离 runtime', scope: '当前研究轮次' },
+  })
+  const view = h.runtime.research!.continuous.view()
+  expect(view.candidates).not.toEqual(expect.arrayContaining([expect.objectContaining({ question: repeated.question, status: 'open' })]))
+  expect(view.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ question: '重新扫描已完成研究与未决问题，提出一个未重复且可用项目证据验证的新方向。', status: 'open' })]))
+})
+
 it('refreshes the research frontier after exhaustion and keeps real blockers stopped', async () => {
   const root = workspace(), { h, sessionId } = await continuousWorker(root)
   await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
@@ -227,7 +303,7 @@ it('refreshes the research frontier after exhaustion and keeps real blockers sto
   expect(h.runtime.research!.continuous.view()).toMatchObject({ status: 'blocked', error: '当前研究前沿已耗尽，需要新的项目证据或人工授权。' })
 })
 
-it('explicit resume requeues a blocked frontier when no other work remains', async () => {
+it('requires an explicit Attention approval to requeue a blocked frontier', async () => {
   const root = workspace(), { h, sessionId } = await continuousWorker(root)
   await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
     round_id: h.runtime.research!.continuous.view().active!.id, summary: '当前方向暂时收敛，先安排一次前沿扫描。', outcome: 'exhausted', artifacts: [], evidence: [], next: [],
@@ -241,12 +317,91 @@ it('explicit resume requeues a blocked frontier when no other work remains', asy
   await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
     round_id: refresh.id, summary: '前沿扫描也需要操作者授权。', outcome: 'blocked', artifacts: [], evidence: [], next: [],
     blocker: '需要操作者授权隔离环境中的动态连接跟踪。',
+    attention: { kind: 'authorization', question: '需要操作者授权隔离环境中的动态连接跟踪。', action: 'dynamic-experiment', target: '隔离 runtime', scope: '当前研究轮次', constraints: ['仅执行一次连接跟踪'] },
   })
   expect(h.runtime.research!.continuous.view().candidates).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'blocked' })]))
-  await h.api('POST', 'research/continuous', { enabled: false })
   await h.api('POST', 'research/continuous', { enabled: true })
+  expect(h.runtime.research!.continuous.view().candidates).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'blocked', question: refresh.question })]))
+  const attention = h.runtime.research!.continuous.view().attention!
+  expect(attention.kind).toBe('authorization')
+  expect((await h.api('POST', `research/attention/${attention.id}/resolve`, { decision: 'approve' })).status).toBe(200)
+  expect(h.runtime.research!.continuous.view().candidates).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'open', question: refresh.question })]))
+})
+
+it.each([false, true])('resumes an approved frontier despite a stale scheduler blocker (already approved: %s)', async (alreadyApproved) => {
+  const root = workspace(), { h, sessionId } = await continuousWorker(root)
+  const round = h.runtime.research!.continuous.view().active!
+  const blocker = '需要操作者授权隔离环境中的动态连接跟踪。'
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
+    round_id: round.id, summary: '动态验证需要明确授权。', outcome: 'blocked', artifacts: [], evidence: [], next: [], blocker,
+    attention: { kind: 'authorization', question: blocker, action: 'dynamic-experiment', target: '隔离 runtime', scope: '当前研究轮次' },
+  })
+  const attention = h.runtime.research!.continuous.view().attention!
+  const approve = () => h.api('POST', `research/attention/${attention.id}/resolve`, { decision: 'approve' })
+  if (alreadyApproved) expect((await approve()).status).toBe(200)
+  // Reproduce the durable legacy state observed on xiaoyi, including the
+  // older JSON-encoded question error left after the operator approved.
+  const key = 'continuous-security-research-v1'
+  const saved = h.runtime.store.get<Record<string, unknown>>(key)!
+  h.runtime.store.set(key, { ...saved,
+    candidates: (saved.candidates as { question: string }[]).filter(candidate => candidate.question === round.question),
+    error: JSON.stringify({ kind: 'question', question: blocker }) })
+  if (!alreadyApproved) expect((await approve()).status).toBe(200)
+  expect(h.runtime.research!.continuous.view().error).toBeUndefined()
+  await idleWorker(h, sessionId)
+  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 11_000)
+  await h.runtime.pump(); await h.runtime.idle()
+  await idleWorker(h, sessionId)
+  await h.runtime.pump(); await h.runtime.idle()
+  expect(h.runtime.research!.continuous.view()).toMatchObject({ status: 'researching', active: { question: round.question } })
+  expect(h.runtime.research!.continuous.view().authorizationEvents).toHaveLength(1)
+  // A real scheduler fault must not be discarded merely because approval exists.
+  const resumed = h.runtime.store.get<Record<string, unknown>>(key)!
+  h.runtime.store.set(key, { ...resumed, error: 'Source collection drift detected' })
+  expect(h.runtime.research!.continuous.view().error).toBe('Source collection drift detected')
+})
+
+it('records a denial and does not reopen the blocked candidate', async () => {
+  const root = workspace(), { h, sessionId } = await continuousWorker(root)
+  const round = h.runtime.research!.continuous.view().active!
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
+    round_id: round.id, summary: '动态验证需要人工决定。', outcome: 'blocked', artifacts: [], evidence: [], next: [],
+    blocker: '需要允许一次隔离 runtime 动态验证。',
+    attention: { kind: 'authorization', question: '需要允许一次隔离 runtime 动态验证。', action: 'dynamic-experiment', target: '隔离 runtime', scope: '当前研究轮次' },
+  })
+  const attention = h.runtime.research!.continuous.view().attention!
+  expect((await h.api('POST', `research/attention/${attention.id}/resolve`, { decision: 'deny', note: '当前环境不允许动态连接跟踪。' })).status).toBe(200)
   const view = h.runtime.research!.continuous.view()
-  expect(view.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'open', question: refresh.question })]))
+  expect(view.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'blocked', blocker: '需要允许一次隔离 runtime 动态验证。' })]))
+  expect(view.authorizationEvents).toEqual(expect.arrayContaining([expect.objectContaining({ attentionId: attention.id, decision: 'denied' })]))
+  expect(view.attention).toBeNull()
+})
+
+it('expires a research authorization without treating it as an approval', async () => {
+  const root = workspace(), { h, sessionId } = await continuousWorker(root)
+  const round = h.runtime.research!.continuous.view().active!
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
+    round_id: round.id, summary: '动态验证需要人工决定。', outcome: 'blocked', artifacts: [], evidence: [], next: [],
+    blocker: '授权窗口已过期。',
+    attention: { kind: 'authorization', question: '授权窗口已过期。', action: 'runtime-access', target: '临时 runtime', scope: '当前研究轮次', expires_at: new Date(Date.now() - 1000).toISOString() },
+  })
+  const attention = h.runtime.research!.continuous.view().attention!
+  expect((await h.api('POST', `research/attention/${attention.id}/resolve`, { decision: 'approve' })).body).toMatchObject({ status: 'expired' })
+  expect(h.runtime.research!.continuous.view().candidates).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'blocked' })]))
+})
+
+it('reopens a question Attention only after the worker clears it', async () => {
+  const root = workspace(), { h, sessionId } = await continuousWorker(root)
+  const round = h.runtime.research!.continuous.view().active!
+  await h.runTool(sessionId, 'orchestrator_research_checkpoint', {
+    round_id: round.id, summary: '需要补充一个关键事实。', outcome: 'blocked', artifacts: [], evidence: [], next: [],
+    blocker: '请确认目标 runtime 的启动参数。',
+    attention: { kind: 'question', question: '请确认目标 runtime 的启动参数。' },
+  })
+  expect(h.runtime.research!.continuous.view().candidates).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'blocked' })]))
+  await h.runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: '已收到人工回答并继续处理。', human_action: null })
+  h.runtime.research!.continuous.tick()
+  expect(h.runtime.research!.continuous.view().candidates).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'open' })]))
 })
 
 it('keeps an explicit research prerequisite visible while leaving other frontier work eligible', async () => {

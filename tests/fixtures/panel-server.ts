@@ -302,6 +302,15 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     server.research.continuous.status = enabled ? 'waiting' : 'paused'
     return server.research.continuous
   } },
+  'POST research/attention/:id/resolve': { body: true, answer: ({ params, body }) => {
+    if (!server.research) return refuse(400, 'Local research workspace is not ready')
+    const attention = server.research.continuous.attention
+    if (!attention || attention.id !== params.id || attention.kind !== 'authorization') return refuse(400, 'Research Attention not found')
+    server.research.continuous.attention = null
+    server.research.continuous.attentions = server.research.continuous.attentions.filter(item => item.id !== params.id)
+    if (server.research.attention?.id === params.id) server.research.attention = null
+    return { attentionId: params.id, candidateId: attention.candidateId ?? 'candidate', roundId: attention.roundId ?? 'round', status: (body as { decision: string }).decision === 'approve' ? 'approved' : 'denied' }
+  } },
   'GET research': { answer: () => server.research ?? null },
   'POST research/messages': { body: true, answer: ({ body }) => {
     if (server.researchError) return refuse(500, server.researchError)

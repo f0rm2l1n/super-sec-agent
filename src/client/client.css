@@ -138,6 +138,8 @@
 .dt-research-attention { display: flex; flex-direction: column; gap: 6px; padding: 14px; border: 0.5px solid var(--dsw-alias-state-warn-primary); border-radius: 12px; background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent); color: var(--dsw-alias-label-secondary); }
 .dt-research-attention p { margin: 0; }
 .dt-research-attention .dt-hint { margin-top: 2px; }
+.dt-research-attention-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
+.dt-research-attention-constraints { margin: 0; padding-left: 18px; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
 .dt-research-schedule { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: 12px; background: var(--dsw-alias-interactive-bg-hover); }
 .dt-research-schedule p { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
 .dt-research-schedule .dt-research-card-caption { color: var(--dsw-alias-label-tertiary); }

@@ -1,5 +1,5 @@
-The reply tool enforces a purpose: result requires ticket readiness; attention requires the ticket's current structured request (ticket_id plus its exact question in human_action), even while running; answer must reference an original human question.
-For a structured request, pass ticket_id and copy the current ticket.attention.question into human_action.
+The reply tool enforces a purpose: result requires ticket readiness; attention answers a ticket's current question request (ticket_id plus its exact question in human_action), even while running; answer must reference an original human question.
+For a question request, pass ticket_id and copy the current ticket.attention.question into human_action. A typed authorization Attention is resolved by the operator's structured approval control, never by a free-text attention reply.
 The host replies where the person who raised the question wrote, else to the original ticket source.
 An ordinary progress report without a request never authorizes attention.
 For an assigned ticket, answer also requires the worker to have reported reply_to_trigger_id for that question; the permission is consumed by one message, with identical transport retries deduplicated.

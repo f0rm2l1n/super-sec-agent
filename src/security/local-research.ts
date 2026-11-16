@@ -169,6 +169,12 @@ export class LocalResearch {
     return { id, duplicate: received === 'duplicate' }
   }
 
+  resolveAttention(attentionId: string, decision: 'approve' | 'deny', note?: string) {
+    this.validate()
+    try { return this.continuous.resolveAttention(attentionId, decision, note) }
+    catch (error) { throw new LocalResearchError(error instanceof Error ? error.message : String(error), 409) }
+  }
+
   /** Poll the explicit workspace inbox. The runtime calls this during its regular local pass. */
   pollInbox() { return this.inbox.poll() }
 
@@ -204,7 +210,7 @@ export class LocalResearch {
     const primaryTicketId = this.continuous.view().workers?.[0]?.ticketId
     const orderedTickets = [...tickets].sort((left, right) => Number(right.id === primaryTicketId) - Number(left.id === primaryTicketId))
     return { id: config.id, name: config.name, workspace: root, continuous: this.continuous.view(),
-      attention: attention ? { question: attention.question, triggerId: attention.triggerId } : null,
+      attention: attention ? { ...attention, kind: attention.kind ?? 'question' } : null,
       inbox: this.inbox.view(),
       sources: lock.sources.map(({ id, kind, path, revision, role }) => ({ id, kind, path, revision, role })),
       messages: requests.map(request => ({ id: request.id, text: request.text, at: request.at,
