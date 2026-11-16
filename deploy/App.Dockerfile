@@ -19,6 +19,6 @@ RUN chmod 755 /usr/local/bin/superagent-entrypoint
 # A 401 from the token gateway only proves that the proxy is listening. Read
 # the token file and check the management API, including the loaded plugin.
 # Docker reports unhealthy containers; the entrypoint supervises process exits.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=600s --retries=3 \
   CMD node /opt/superagent-sec/scripts/container-health.mjs
 

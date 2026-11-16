@@ -80,7 +80,7 @@ fetch('http://127.0.0.1:3184/orchestrator/api/'+process.argv[1], {
         self.compose('build', 'superagent-sec')
 
     def start(self):
-        self.compose('up', '-d', '--wait', '--wait-timeout', '180', 'superagent-sec')
+        self.compose('up', '-d', '--wait', '--wait-timeout', '900', 'superagent-sec')
 
     def url(self):
         result = self.compose('exec', '-T', 'superagent-sec', 'node', '-e',

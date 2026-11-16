@@ -13,6 +13,12 @@ Deployment = module['Deployment']
 
 
 class DeploymentTest(unittest.TestCase):
+    def test_start_waits_up_to_fifteen_minutes_for_slow_startup(self):
+        deploy = Deployment.__new__(Deployment)
+        deploy.compose = Mock()
+        deploy.start()
+        deploy.compose.assert_called_once_with('up', '-d', '--wait', '--wait-timeout', '900', 'superagent-sec')
+
     def deployment(self, root):
         env = root / 'operator.env'
         env.write_text('SUPERAGENT_PROJECT_ID=wrong\nDONT_EXECUTE=$(touch should-not-exist)\n')

@@ -128,7 +128,8 @@ dsh "$profile" --no-open &
 dsh_pid=$!
 
 ready=0
-for _ in $(seq 1 60); do
+backend_deadline=$(( $(date +%s) + 600 ))
+while [ "$(date +%s)" -lt "$backend_deadline" ]; do
   if node -e "fetch('http://127.0.0.1:${backend_port}/', { signal: AbortSignal.timeout(2000) }).then(() => process.exit(0)).catch(() => process.exit(1))"; then
     ready=1
     break

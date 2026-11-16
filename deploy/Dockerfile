@@ -31,6 +31,6 @@ COPY deploy/entrypoint.sh /usr/local/bin/superagent-entrypoint
 RUN chmod 755 /usr/local/bin/superagent-entrypoint
 
 EXPOSE 3184
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=600s --retries=3 \
   CMD node -e "const port = process.env.DSH_SUPERAGENT_WEB_PORT || '3184'; fetch('http://127.0.0.1:' + port + '/').then((response) => process.exit(response.status === 401 ? 0 : 1)).catch(() => process.exit(1))"
 ENTRYPOINT ["/usr/local/bin/superagent-entrypoint"]

@@ -58,6 +58,8 @@ docker load < superagent-sec-runtime-v0.1.0-sec.6-linux-amd64.tar.gz
 
 脚本会生成私有 `deploy/.env`，构建应用镜像，创建标准工作区，复制项目资料并登记为普通目录，固定基线，启动并等待健康检查，最后打印可直接打开的认证 URL。
 
+慢启动环境：镜像健康检查启动宽限期为 600 秒，入口脚本等待后端启动最多 600 秒，部署脚本等待容器健康最多 900 秒；提前就绪即可继续。各层超时含义及验证见 [部署超时说明](../tests/deployment-timeouts.md)。
+
 默认数据位置为 `.artifacts/instances/my-project/`，不进入 Git 或应用镜像。需要将数据放在仓库之外时，在 setup 命令加 `--data-dir /srv/superagent-sec/my-project`；目录需对当前用户可写。端口默认 3184，可加 `--port 3284`。`--scope-file /路径/SCOPE.md` 可以在固定基线前使用已经审阅的研究范围。
 
 项目资料可包含多个仓库、普通文件、二进制和伪代码。首次 setup 按一个目录登记，不假设它是单个 Git。更细的来源登记在标准 `project.json` 中维护。
